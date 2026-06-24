@@ -1,5 +1,6 @@
 import { config } from '../../config/index.js';
 import { assertEgressAllowed, getScopedSecret, EGRESS_HOSTS } from '../../core/governance/credentials.js';
+import { resilientFetch } from '../../core/net/resilientFetch.js';
 import { renderPreview, type HubSpotClient } from './client.js';
 import type {
   OwnerQuery,
@@ -56,7 +57,7 @@ export class ProjectsApiHubSpotClient implements HubSpotClient {
 
   private async http<T>(method: string, path: string, token: string, body?: unknown): Promise<T> {
     assertEgressAllowed('hubspot_admin', HOST); // deny-by-default egress guard
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await resilientFetch(`${BASE}${path}`, {
       method,
       headers: {
         authorization: `Bearer ${token}`,

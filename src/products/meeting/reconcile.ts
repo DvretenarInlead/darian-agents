@@ -42,20 +42,29 @@ export async function reconcileItems(
   meetingId: string,
   items: ActionItem[],
 ): Promise<ReconciledItem[]> {
-  const out: ReconciledItem[] = [];
-  for (const item of items) {
-    const hash = itemHash(item);
-    const res = await pool.query(
-      `INSERT INTO reconciliation_ledger (meeting_id, item_hash, decision)
-       VALUES ($1, $2, 'created')
-       ON CONFLICT (meeting_id, item_hash) DO NOTHING`,
-      [meetingId, hash],
-    );
-    out.push({
-      item,
-      itemHash: hash,
-      decision: res.rowCount === 1 ? 'created' : 'skipped_duplicate',
-    });
-  }
-  return out;
+  if (items.length === 0) return [];
+
+  const hashes = items.map((item) => itemHash(item));
+  const distinct = [...new Set(hashes)];
+
+  // Single round-trip: insert the distinct hashes; RETURNING yields only the
+  // rows actually inserted (fresh ones). Anything not returned already existed.
+  const inserted = await pool.query<{ item_hash: string }>(
+    `INSERT INTO reconciliation_ledger (meeting_id, item_hash, decision)
+       SELECT $1, h, 'created' FROM unnest($2::text[]) AS h
+     ON CONFLICT (meeting_id, item_hash) DO NOTHING
+     RETURNING item_hash`,
+    [meetingId, distinct],
+  );
+  const created = new Set(inserted.rows.map((r) => r.item_hash));
+
+  // Map back, also collapsing intra-batch duplicates: only the first occurrence
+  // of a fresh hash is 'created'; repeats in the same batch are duplicates.
+  const usedInBatch = new Set<string>();
+  return items.map((item, i) => {
+    const hash = hashes[i]!;
+    const fresh = created.has(hash) && !usedInBatch.has(hash);
+    if (fresh) usedInBatch.add(hash);
+    return { item, itemHash: hash, decision: fresh ? 'created' : 'skipped_duplicate' };
+  });
 }

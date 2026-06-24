@@ -37,6 +37,8 @@ export interface Quarantine {
 export interface BoardOutcome {
   decisions: Map<string, BoardDecision>;
   quarantines: Quarantine[];
+  /** Agents whose batched call failed; their subjects fail-closed to escalation. */
+  failedAgents: BoardAgent[];
 }
 
 export interface RunBoardDeps {
@@ -49,14 +51,19 @@ export interface RunBoardDeps {
 export async function runBoard(deps: RunBoardDeps, subjects: BoardSubject[]): Promise<BoardOutcome> {
   const agents = deps.agents ?? [...BOARD_AGENTS];
   const quarantines: Quarantine[] = [];
+  const failedAgents: BoardAgent[] = [];
 
-  // One batched call per agent, in parallel.
-  const perAgent = await Promise.all(
-    agents.map(async (agent) => {
-      const verdicts = await deps.runner.reviewBatch(agent, subjects);
-      return { agent, verdicts };
-    }),
-  );
+  // One batched call per agent, in parallel. allSettled so a single agent's
+  // failure (LLM error/timeout) doesn't reject the whole board — that agent
+  // simply contributes no verdicts, and every subject then escalates for the
+  // missing required agent (fail-closed).
+  const settled = await Promise.allSettled(agents.map((agent) => deps.runner.reviewBatch(agent, subjects)));
+  const perAgent = settled.map((res, i) => {
+    const agent = agents[i]!;
+    if (res.status === 'fulfilled') return { agent, verdicts: res.value };
+    failedAgents.push(agent);
+    return { agent, verdicts: [] as Verdict[] };
+  });
 
   // subjectId -> verdicts that passed the output guard
   const bySubject = new Map<string, Verdict[]>();
@@ -91,10 +98,11 @@ export async function runBoard(deps: RunBoardDeps, subjects: BoardSubject[]): Pr
     decisions.set(subject.subjectId, resolveBoard(verdicts, deps.policy, { requiredAgents: agents }));
   }
 
-  return { decisions, quarantines };
+  return { decisions, quarantines, failedAgents };
 }
 
-const DOMAINS: Record<BoardAgent, string> = {
+/** Canonical domain each board agent reports under (drives the Security veto). */
+export const AGENT_DOMAINS: Record<BoardAgent, string> = {
   project_manager: 'project_management',
   hubspot_admin: 'crm',
   security: 'security',
@@ -120,7 +128,7 @@ export class LlmBoardRunner implements BoardRunner {
             role: 'user',
             content:
               `Return ONLY a JSON array of verdicts, one per subject, each with: ` +
-              `agent="${agent}", subject_id, domain="${DOMAINS[agent]}", disposition ("pass"|"fail"), ` +
+              `agent="${agent}", subject_id, domain="${AGENT_DOMAINS[agent]}", disposition ("pass"|"fail"), ` +
               `confidence (0..1), issues ([] or {code,message,severity}), proposed_fix (or null), context (or null).\n` +
               `Subjects:\n${JSON.stringify(subjects)}`,
           },

@@ -1,5 +1,6 @@
 import { config } from '../../config/index.js';
 import { assertEgressAllowed, getScopedSecret, EGRESS_HOSTS } from '../../core/governance/credentials.js';
+import { resilientFetch } from '../../core/net/resilientFetch.js';
 import type { AgentName } from '../../core/agents/contract.js';
 
 /**
@@ -37,7 +38,7 @@ export class AnthropicLlmClient implements LlmClient {
     const apiKey = getScopedSecret(agent, 'anthropic');
     const model = req.model ?? config().anthropic.defaultModel;
 
-    const res = await fetch(`https://${HOST}/v1/messages`, {
+    const res = await resilientFetch(`https://${HOST}/v1/messages`, {
       method: 'POST',
       headers: {
         'x-api-key': apiKey,

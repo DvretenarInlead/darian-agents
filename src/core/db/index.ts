@@ -13,6 +13,10 @@ export function getPool(): Pool {
     const poolConfig: PoolConfig = {
       connectionString: cfg.db.url,
       ssl: cfg.db.ssl ? { rejectUnauthorized: true } : false,
+      // Per-instance cap. Across N web + M worker instances the total must stay
+      // under the Postgres max_connections — front the DB with PgBouncer
+      // (transaction mode) for horizontal scale. See docs/ARCHITECTURE.md.
+      max: cfg.db.poolMax,
     };
     pool = new Pool(poolConfig);
   }
