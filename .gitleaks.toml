@@ -1,0 +1,18 @@
+# gitleaks configuration for darian-agents.
+#
+# Extends the default ruleset. The only exception: *.test.ts files legitimately
+# contain INTENTIONAL fake secrets — they are fixtures that exercise the repo
+# security pre-scan (products/repo/prescan.ts) and the audit redactor
+# (core/audit/redact.ts), e.g. a dummy "-----BEGIN PRIVATE KEY-----" block and
+# the AWS-documented example key. Production code and config remain fully scanned.
+
+title = "darian-agents"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Intentional fake secrets in unit-test fixtures (secret-detector tests)."
+paths = [
+  '''.*\.test\.ts$''',
+]

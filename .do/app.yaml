@@ -1,0 +1,57 @@
+# DigitalOcean App Platform spec (build-order step 8).
+#
+# One web service (Fastify: webhook receiver + console API + health probes) and
+# one worker (async jobs: extraction, board, sync). Both connect to DO Managed
+# Postgres as the least-privilege app_rw role (see scripts/provision-roles.sql)
+# which has INSERT+SELECT-only on audit_log. Secrets are App Platform secrets —
+# never in the repo; values below are SECRET-typed placeholders.
+name: darian-agents
+region: nyc
+
+databases:
+  - name: darian-pg
+    engine: PG
+    version: "16"
+    production: true
+
+services:
+  - name: web
+    instance_count: 1
+    instance_size_slug: basic-xs
+    http_port: 8080
+    health_check:
+      http_path: /readyz
+    run_command: node dist/index.js
+    build_command: pnpm install --frozen-lockfile && pnpm build
+    envs: &app_envs
+      - { key: NODE_ENV, value: production }
+      - { key: DATABASE_URL, scope: RUN_TIME, value: ${darian-pg.DATABASE_URL} }
+      - { key: DATABASE_SSL, value: "true" }
+      - { key: ENVELOPE_MASTER_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: ENVELOPE_KEY_VERSION, value: "1" }
+      - { key: ANTHROPIC_API_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: FIREFLIES_API_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: FIREFLIES_WEBHOOK_SECRET, scope: RUN_TIME, type: SECRET }
+      - { key: HUBSPOT_ACCESS_TOKEN, scope: RUN_TIME, type: SECRET }
+      - { key: HUBSPOT_SERVICE_KEY, scope: RUN_TIME, type: SECRET }
+      - { key: HUBSPOT_PROJECTS_API_VERSION, value: "2026-03" }
+      - { key: GITHUB_TOKEN, scope: RUN_TIME, type: SECRET }
+      - { key: EGRESS_ALLOWLIST, value: "api.anthropic.com,api.fireflies.ai,api.hubapi.com,api.github.com" }
+      - { key: AUDIT_SHIP_ENDPOINT, scope: RUN_TIME, type: SECRET }
+      - { key: AUDIT_SHIP_TOKEN, scope: RUN_TIME, type: SECRET }
+
+workers:
+  - name: worker
+    instance_count: 1
+    instance_size_slug: basic-xs
+    run_command: node dist/worker.js
+    build_command: pnpm install --frozen-lockfile && pnpm build
+    envs: *app_envs
+
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    instance_size_slug: basic-xs
+    run_command: pnpm migrate
+    build_command: pnpm install --frozen-lockfile && pnpm build
+    envs: *app_envs
