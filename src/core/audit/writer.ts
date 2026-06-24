@@ -102,9 +102,9 @@ export async function appendAudit(pool: Pool, event: AuditEvent, nowIso: string)
 }
 
 async function shipOffBox(row: AuditEntryInput & { id: string; prevHashRow: string }): Promise<void> {
-  const cfg = config();
-  if (!cfg.auditShip.endpoint) return;
   try {
+    const cfg = config();
+    if (!cfg.auditShip.endpoint) return;
     await fetch(cfg.auditShip.endpoint, {
       method: 'POST',
       headers: {

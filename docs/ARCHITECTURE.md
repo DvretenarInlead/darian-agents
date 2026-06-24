@@ -106,6 +106,30 @@ a concrete adapter:
 > in the brief. The adapter *structure* — port, version pinning, egress guard,
 > admin-mode owner resolution — is final; only those Hub-side details are pending.
 
+## Products
+
+### Product A — Meeting→Task Engine (build-order step 6 — implemented)
+The worker pipeline (`products/meeting/`) runs after the webhook receiver has
+verified + enqueued a delivery:
+- **Extraction** (`extract.ts`) — transcript is sanitised + length-capped, then
+  an `LlmExtractor` (Anthropic behind the `LlmClient` port) returns strict-JSON
+  action items, each carrying a `source_quote` (anti-hallucination provenance).
+- **Reconciliation** (`reconcile.ts`) — items normalise to a stable `item_hash`;
+  an atomic `INSERT … ON CONFLICT DO NOTHING` on `reconciliation_ledger` decides
+  create-vs-duplicate, so re-delivery never duplicates work.
+- **Board** (`board.ts`) — one batched call per agent over all items; each
+  verdict is schema-validated and run through the output-injection guard
+  (quarantine, don't drop), then resolved per item by the orchestrator engine.
+- **Sync** — proceeding items become a `buildSyncPlan` → `runSync` (dry-run →
+  board-approved apply); escalated items go to `escalation_queue`. Every stage
+  is audited.
+- **Query agent** (`query.ts`) — "what did I commit to" answered from the
+  ledger/sync provenance, not re-derived from transcripts.
+
+LLM calls (extraction + board) sit behind the `LlmClient` port (Anthropic
+adapter + stub), so the pure logic (reconciliation, resolution, pipeline flow)
+is fully unit-tested without network.
+
 ## Build order & status
 
 | Step | Description | Status |
@@ -116,7 +140,7 @@ a concrete adapter:
 | 3 | Governance primitives wired into pipeline, secret scanning + log redaction | ✅ done |
 | 4 | Trigger registry: webhook (replay protection, constant-time sig, rate limits) + cron + on-demand | ✅ done |
 | 5 | HubSpot integration: Agent CLI wrapper + Projects API fallback + admin-mode owner resolution + egress allowlist | ✅ done |
-| 6 | Product A full path | ⬜ todo |
+| 6 | Product A full path | ✅ done |
 | 7 | Admin console: auth + MFA + sudo-mode + SoD RBAC, editors, escalation queue, audit viewer, kill-switch | ⬜ todo |
 | 8 | DO App Platform deploy (web + worker), append-only audit role, envelope keys | ⬜ todo |
 | 9 | Product B: sandboxed GitHub ingest → pre-scan → Dev/Security/CTO board → scorecard | ⬜ todo |

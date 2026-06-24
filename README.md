@@ -60,6 +60,9 @@ src/
     db/            Shared pg pool
   integrations/
     hubspot/       HubSpotClient port + Agent CLI / Projects-API / in-memory adapters, plan + sync
+    anthropic/     LlmClient port + Anthropic adapter + stub (scoped egress/creds)
+  products/
+    meeting/       Product A: extraction, reconciliation, board, pipeline, query agent
   web/             Fastify plugins (hardened webhook receiver)
   index.ts         Web service entrypoint + health probes
 docs/              Architecture, security, and ISO compliance mapping
