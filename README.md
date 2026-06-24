@@ -58,6 +58,8 @@ src/
     triggers/      Webhook verify/dedupe/rate-limit, cron locking, trigger registry
     audit/         Tamper-evident hash-chain, secret redaction, append-only writer
     db/            Shared pg pool
+  integrations/
+    hubspot/       HubSpotClient port + Agent CLI / Projects-API / in-memory adapters, plan + sync
   web/             Fastify plugins (hardened webhook receiver)
   index.ts         Web service entrypoint + health probes
 docs/              Architecture, security, and ISO compliance mapping

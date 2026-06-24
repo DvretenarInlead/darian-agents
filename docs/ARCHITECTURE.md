@@ -86,6 +86,26 @@ Three trigger kinds in `trigger_configs`, loaded + spec-validated via
   (`triggers/cronLock.ts`) — no double-fire, no blocking.
 - **On-demand** ("run now") triggers carry an `action` spec.
 
+### HubSpot integration (build-order step 5 — implemented)
+Everything talks to the `HubSpotClient` **port** (`integrations/hubspot/`), never
+a concrete adapter:
+- **Agent CLI** adapter (`agentCli.ts`) — primary per the brief; invokes the CLI
+  via `execFile` with an argv array (no shell). The CLI subcommand/flag surface
+  is **beta/pending verification**, so it is opt-in.
+- **Projects API** adapter (`projectsApi.ts`) — documented fallback and the
+  default. Version-pinned (`/crm/objects/<version>/projects`), egress-guarded
+  (`assertEgressAllowed`), admin-mode owner resolution via the service key.
+- **In-memory** adapter — deterministic, for tests/dry-run demos.
+- `buildSyncPlan` (`plan.ts`, pure) turns board-approved, reconciled items into
+  create-or-update ops, dropping `skipped_duplicate` items (no duplicates).
+- `runSync` (`sync.ts`) enforces **dry-run-first** (always preview, logged to
+  `sync_log`) and **board-approved-only** apply; empty plans short-circuit.
+
+> HubSpot-side specifics (Hub tier, Projects-object availability, OAuth scopes,
+> exact CLI surface and association type ids) are open "remaining confirmations"
+> in the brief. The adapter *structure* — port, version pinning, egress guard,
+> admin-mode owner resolution — is final; only those Hub-side details are pending.
+
 ## Build order & status
 
 | Step | Description | Status |
@@ -95,7 +115,7 @@ Three trigger kinds in `trigger_configs`, loaded + spec-validated via
 | 2 | Orchestrator (Security veto), safe/unsafe resolution, audit writer + off-box shipping | ✅ done |
 | 3 | Governance primitives wired into pipeline, secret scanning + log redaction | ✅ done |
 | 4 | Trigger registry: webhook (replay protection, constant-time sig, rate limits) + cron + on-demand | ✅ done |
-| 5 | HubSpot integration: Agent CLI wrapper + Projects API fallback + admin-mode owner resolution + egress allowlist | ⬜ todo |
+| 5 | HubSpot integration: Agent CLI wrapper + Projects API fallback + admin-mode owner resolution + egress allowlist | ✅ done |
 | 6 | Product A full path | ⬜ todo |
 | 7 | Admin console: auth + MFA + sudo-mode + SoD RBAC, editors, escalation queue, audit viewer, kill-switch | ⬜ todo |
 | 8 | DO App Platform deploy (web + worker), append-only audit role, envelope keys | ⬜ todo |
