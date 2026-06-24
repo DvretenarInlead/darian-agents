@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
 import type { BoardAgent } from '../../core/agents/contract.js';
 import type { ResolutionPolicyEntry } from '../../core/orchestrator/resolution.js';
-import { appendAudit } from '../../core/audit/writer.js';
+import { appendAuditBatch, type AuditEvent } from '../../core/audit/writer.js';
 import type { HubSpotClient } from '../../integrations/hubspot/client.js';
 import { buildSyncPlan, type ApprovedItem } from '../../integrations/hubspot/plan.js';
 import { runSync } from '../../integrations/hubspot/sync.js';
@@ -10,6 +10,7 @@ import type { Extractor } from './extract.js';
 import { reconcileItems } from './reconcile.js';
 import { runBoard, type BoardRunner, type BoardSubject } from './board.js';
 import { isEngaged } from '../../console/killswitch.js';
+import { escalations as escalationsMetric, syncOutcomes } from '../../core/obs/metrics.js';
 
 /**
  * Product A pipeline (build-order step 6): extraction → reconciliation → batched
@@ -80,24 +81,22 @@ export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessIn
     subjects,
   );
 
-  for (const q of quarantines) {
-    await appendAudit(
-      pool,
-      { eventType: 'autofix', product: 'meeting', actorId: null, subjectId: q.subjectId, payload: { quarantine: q } },
-      now(),
-    );
-  }
+  // Collect audit events and escalations, then write each in one batched call
+  // instead of a DB round-trip (and audit advisory-lock acquisition) per item.
+  const auditEvents: AuditEvent[] = quarantines.map((q) => ({
+    eventType: 'autofix',
+    product: 'meeting',
+    actorId: null,
+    subjectId: q.subjectId,
+    payload: { quarantine: q },
+  }));
+  const escalationRows: { subjectId: string; reason: string; decision: unknown }[] = [];
 
   const approvedItems: ApprovedItem[] = [];
-  let escalated = 0;
   for (const r of fresh) {
     const decision = decisions.get(r.itemHash);
     if (!decision) continue;
-    await appendAudit(
-      pool,
-      { eventType: 'verdict', product: 'meeting', actorId: null, subjectId: r.itemHash, payload: { decision } },
-      now(),
-    );
+    auditEvents.push({ eventType: 'verdict', product: 'meeting', actorId: null, subjectId: r.itemHash, payload: { decision } });
     if (decision.outcome === 'proceed') {
       const task: TaskInput = {
         title: r.item.title,
@@ -106,18 +105,25 @@ export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessIn
       };
       approvedItems.push({ task, decision: r.decision });
     } else {
-      escalated += 1;
-      await pool.query(
-        `INSERT INTO escalation_queue (product, subject_id, reason, verdicts, status)
-         VALUES ('meeting', $1, $2, $3, 'pending')`,
-        [r.itemHash, decision.rationale, JSON.stringify(decision)],
-      );
-      await appendAudit(
-        pool,
-        { eventType: 'escalation', product: 'meeting', actorId: null, subjectId: r.itemHash, payload: { decision } },
-        now(),
-      );
+      escalationRows.push({ subjectId: r.itemHash, reason: decision.rationale, decision });
+      auditEvents.push({ eventType: 'escalation', product: 'meeting', actorId: null, subjectId: r.itemHash, payload: { decision } });
     }
+  }
+  const escalated = escalationRows.length;
+  if (escalated > 0) escalationsMetric.inc({ product: 'meeting' }, escalated);
+
+  if (escalationRows.length > 0) {
+    // One multi-row insert for all escalations.
+    await pool.query(
+      `INSERT INTO escalation_queue (product, subject_id, reason, verdicts, status)
+         SELECT 'meeting', s, r, v::jsonb, 'pending'
+           FROM unnest($1::text[], $2::text[], $3::text[]) AS t(s, r, v)`,
+      [
+        escalationRows.map((e) => e.subjectId),
+        escalationRows.map((e) => e.reason),
+        escalationRows.map((e) => JSON.stringify(e.decision)),
+      ],
+    );
   }
 
   // Incident kill-switch: when engaged, never perform external writes —
@@ -142,18 +148,18 @@ export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessIn
     });
     const outcome = await runSync(pool, deps.hubspot, plan, effectiveApply);
     synced = Boolean(outcome.result);
-    await appendAudit(
-      pool,
-      {
-        eventType: 'external_write',
-        product: 'meeting',
-        actorId: null,
-        subjectId: input.meetingId,
-        payload: { preview: outcome.preview, applied: synced, killSwitchEngaged: frozen },
-      },
-      now(),
-    );
+    syncOutcomes.inc({ outcome: synced ? 'applied' : 'previewed' });
+    auditEvents.push({
+      eventType: 'external_write',
+      product: 'meeting',
+      actorId: null,
+      subjectId: input.meetingId,
+      payload: { preview: outcome.preview, applied: synced, killSwitchEngaged: frozen },
+    });
   }
+
+  // One batched, hash-chained audit append for the whole run.
+  await appendAuditBatch(pool, auditEvents, now());
 
   return {
     meetingId: input.meetingId,

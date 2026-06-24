@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { resilientFetch } from '../../core/net/resilientFetch.js';
 
 /**
  * HaveIBeenPwned k-anonymity breach check (build-order step 7).
@@ -35,7 +36,7 @@ export type RangeFetcher = (prefix: string) => Promise<string>;
 
 /** Default fetcher hitting the public range API (text body of suffix:count). */
 export const defaultRangeFetcher: RangeFetcher = async (prefix) => {
-  const res = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`, {
+  const res = await resilientFetch(`https://api.pwnedpasswords.com/range/${prefix}`, {
     headers: { 'add-padding': 'true' },
   });
   if (!res.ok) throw new Error(`HIBP range query failed: ${res.status}`);

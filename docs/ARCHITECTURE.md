@@ -180,6 +180,34 @@ On-demand pipeline (`products/repo/`):
 - **Pipeline** (`pipeline.ts`) — ingest → pre-scan (audited) → board → scorecard
   → audit persist.
 
+## Scalability & operations (enterprise hardening)
+
+Layered on the build-order steps after a code review:
+- **Async decoupling** — the webhook receiver enqueues a durable job
+  (`jobs` table, migration 0003, idempotent on delivery id); worker instances
+  claim with `FOR UPDATE SKIP LOCKED` and run the pipeline. Many workers drain
+  concurrently; failures retry with backoff then dead-letter. Burst ingestion is
+  decoupled from slow LLM/sync work.
+- **Resilient external calls** — `core/net/resilientFetch.ts` adds timeout,
+  retry-with-jitter, and a per-host circuit breaker; used by every adapter.
+- **Board resilience** — `runBoard` uses `allSettled`; a single agent's LLM
+  failure can't fail the batch (its subjects fail closed to escalation).
+- **DB at scale** — batched audit appends (one advisory-lock acquisition per
+  run, not per row), single-statement reconciliation + escalation inserts,
+  configurable pool size (`DATABASE_POOL_MAX`), PgBouncer (transaction mode)
+  recommended across instances. A shared **Postgres-backed rate limiter**
+  (`pgRateLimiter.ts`, migration 0004) replaces the per-instance limiter for
+  multi-instance deploys.
+- **Observability** — one pino structured logger (web + worker) with a
+  correlation id (request/job) in AsyncLocalStorage; Prometheus `/metrics`
+  (`prom-client`): jobs by outcome, board latency, sync outcomes, escalations,
+  queue depth.
+- **Production auth** — argon2id password hashing (scrypt retained for legacy
+  verify + transparent rehash) and zxcvbn strength scoring.
+- **Verification** — DB-layer SQL is covered by a real-Postgres integration
+  suite (`*.itest.ts`) run in CI against a service container; the unit suite
+  stays fast and DB-free.
+
 ## Build order & status
 
 | Step | Description | Status |

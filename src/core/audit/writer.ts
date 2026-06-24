@@ -49,46 +49,50 @@ export interface AppendResult {
 }
 
 export async function appendAudit(pool: Pool, event: AuditEvent, nowIso: string): Promise<AppendResult> {
-  const redactedPayload = redact(event.payload);
-  const entry: AuditEntryInput = {
+  const [result] = await appendAuditBatch(pool, [event], nowIso);
+  return result!;
+}
+
+/**
+ * Append several events as one chained, single-transaction batch. The global
+ * audit advisory lock is taken ONCE for the whole batch (not per row), so a
+ * pipeline that emits many events doesn't serialise the whole system N times.
+ * Hashes are chained in array order against the current tail.
+ */
+export async function appendAuditBatch(pool: Pool, events: AuditEvent[], nowIso: string): Promise<AppendResult[]> {
+  if (events.length === 0) return [];
+
+  const entries: AuditEntryInput[] = events.map((event) => ({
     eventType: event.eventType,
     product: event.product,
     actorId: event.actorId,
     subjectId: event.subjectId,
-    payload: redactedPayload,
+    payload: redact(event.payload),
     createdAt: nowIso,
-  };
+  }));
 
+  const results: AppendResult[] = [];
   const client = await pool.connect();
-  let result: AppendResult;
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1)', [AUDIT_LOCK_KEY]);
 
-    const tail = await client.query<{ row_hash: string }>(
-      'SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1',
-    );
-    const prevHash = tail.rows[0]?.row_hash ?? null;
-    const { rowHash } = nextLink(entry, prevHash);
+    const tail = await client.query<{ row_hash: string }>('SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1');
+    let prevHash = tail.rows[0]?.row_hash ?? null;
 
-    const inserted = await client.query<{ id: string }>(
-      `INSERT INTO audit_log
-         (event_type, product, actor_id, subject_id, payload, prev_hash, row_hash, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING id`,
-      [
-        entry.eventType,
-        entry.product,
-        entry.actorId,
-        entry.subjectId,
-        JSON.stringify(redactedPayload),
-        prevHash,
-        rowHash,
-        entry.createdAt,
-      ],
-    );
+    for (const entry of entries) {
+      const { rowHash } = nextLink(entry, prevHash);
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO audit_log
+           (event_type, product, actor_id, subject_id, payload, prev_hash, row_hash, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id`,
+        [entry.eventType, entry.product, entry.actorId, entry.subjectId, JSON.stringify(entry.payload), prevHash, rowHash, entry.createdAt],
+      );
+      results.push({ id: inserted.rows[0]!.id, rowHash });
+      prevHash = rowHash;
+    }
     await client.query('COMMIT');
-    result = { id: inserted.rows[0]!.id, rowHash };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
@@ -97,8 +101,8 @@ export async function appendAudit(pool: Pool, event: AuditEvent, nowIso: string)
   }
 
   // Best-effort off-box shipping; never blocks or fails the local append.
-  void shipOffBox({ ...entry, id: result.id, prevHashRow: result.rowHash });
-  return result;
+  entries.forEach((entry, i) => void shipOffBox({ ...entry, id: results[i]!.id, prevHashRow: results[i]!.rowHash }));
+  return results;
 }
 
 async function shipOffBox(row: AuditEntryInput & { id: string; prevHashRow: string }): Promise<void> {
