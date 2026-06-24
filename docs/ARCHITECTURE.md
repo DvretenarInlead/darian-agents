@@ -154,6 +154,32 @@ wiring over these and are the remaining piece.
   freezing all external writes; the meeting pipeline checks it and downgrades to
   preview-only when engaged (no crash, still audited).
 
+## Deployment & crypto (build-order step 8 — implemented)
+- **`.do/app.yaml`** — DigitalOcean App Platform spec: a **web** service (Fastify)
+  + a **worker** (`src/worker.ts`, async jobs) + a PRE_DEPLOY **migrate** job, all
+  on DO Managed Postgres. Secrets are App Platform secrets (SECRET-typed), never
+  in the repo.
+- **Least-privilege role** — `scripts/provision-roles.sql` creates `app_rw`; the
+  migrations grant it INSERT+SELECT-only on `audit_log` (append-only).
+- **Envelope encryption** (`core/crypto/envelope.ts`) — per-record AES-256-GCM
+  data key wrapped by the master KEK; self-describing, key-versioned blob so the
+  KEK rotates while old records stay readable. Used for `raw_artifacts.content_enc`
+  and TOTP seeds.
+
+## Product B — Repo Scoring (build-order step 9 — implemented)
+On-demand pipeline (`products/repo/`):
+- **Ingest** (`ingest.ts`) — read-only, never-execute parser over the cloned
+  repo (assumed cloned in an isolated, network-restricted, ephemeral context):
+  resource caps (file count / total / per-file bytes), symlink rejection,
+  path-escape rejection.
+- **Pre-scan** (`prescan.ts`) — **before any content reaches Anthropic**: flags
+  committed secrets/dangerous artefacts and produces a **redacted** view, so
+  secrets never reach the model.
+- **Board** (`score.ts`) — Dev + Security + CTO reviewers (LLM behind a port),
+  each a 0–100 dimension score; aggregated into a scorecard.
+- **Pipeline** (`pipeline.ts`) — ingest → pre-scan (audited) → board → scorecard
+  → audit persist.
+
 ## Build order & status
 
 | Step | Description | Status |
@@ -166,8 +192,8 @@ wiring over these and are the remaining piece.
 | 5 | HubSpot integration: Agent CLI wrapper + Projects API fallback + admin-mode owner resolution + egress allowlist | ✅ done |
 | 6 | Product A full path | ✅ done |
 | 7 | Admin console: auth + MFA + sudo-mode + SoD RBAC, editors, escalation queue, audit viewer, kill-switch | 🟡 security core done; HTTP/UI wiring pending |
-| 8 | DO App Platform deploy (web + worker), append-only audit role, envelope keys | ⬜ todo |
-| 9 | Product B: sandboxed GitHub ingest → pre-scan → Dev/Security/CTO board → scorecard | ⬜ todo |
+| 8 | DO App Platform deploy (web + worker), append-only audit role, envelope keys | ✅ done |
+| 9 | Product B: sandboxed GitHub ingest → pre-scan → Dev/Security/CTO board → scorecard | ✅ done |
 
 ## Locked decisions (from the brief)
 

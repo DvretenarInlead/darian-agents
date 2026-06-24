@@ -57,18 +57,21 @@ src/
     governance/    Per-agent credential/egress scoping + output-side injection guard
     triggers/      Webhook verify/dedupe/rate-limit, cron locking, trigger registry
     audit/         Tamper-evident hash-chain, secret redaction, append-only writer
+    crypto/        App-level envelope encryption (AES-256-GCM, key-versioned)
     db/            Shared pg pool
   integrations/
     hubspot/       HubSpotClient port + Agent CLI / Projects-API / in-memory adapters, plan + sync
     anthropic/     LlmClient port + Anthropic adapter + stub (scoped egress/creds)
   products/
     meeting/       Product A: extraction, reconciliation, board, pipeline, query agent
+    repo/          Product B: sandboxed ingest, security pre-scan, scoring, pipeline
   console/
     auth/          TOTP, password (scrypt), HIBP k-anonymity, sessions, lockout, CSRF
     rbac/          Deny-by-default permissions + separation-of-duties
     killswitch.ts  Incident kill-switch (freezes external writes)
   web/             Fastify plugins (hardened webhook receiver)
   index.ts         Web service entrypoint + health probes
+  worker.ts        Worker entrypoint (async jobs)
 docs/              Architecture, security, and ISO compliance mapping
 ```
 
