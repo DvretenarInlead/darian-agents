@@ -53,7 +53,9 @@ src/
   config/          Validated env config (single source of truth)
   core/
     agents/        Strict-JSON verdict contract + untrusted-text sanitizer
-    audit/         Tamper-evident hash-chain helpers for the audit log
+    orchestrator/  Board resolution (Security veto, CTO tie-break) + policy loader
+    governance/    Per-agent credential/egress scoping + output-side injection guard
+    audit/         Tamper-evident hash-chain, secret redaction, append-only writer
     db/            Shared pg pool
   index.ts         Web service entrypoint + health probes
 docs/              Architecture, security, and ISO compliance mapping

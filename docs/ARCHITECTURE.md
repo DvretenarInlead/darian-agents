@@ -48,14 +48,19 @@ Extraction, Dev, CTO/Architect**.
 - A subject proceeds only if all required agents `pass` (or every failure is a
   reversible auto-fix). Everything is logged to `audit_log` via the writer.
 
-### Governance layer
+### Governance layer (build-order step 3 — implemented)
 - **Untrusted-input handling** (`src/core/agents/sanitize.ts`): strip control
   chars, neutralise fake role markers, length-cap.
-- **Output-side injection scanning**: every agent's free-text output is
-  untrusted input to the next stage; suspicious output is **quarantined to
-  audit, not dropped**.
-- Per-agent scoped credentials, egress allowlist, secret-scan + redact before
-  any log/audit write.
+- **Output-side injection scanning** (`src/core/governance/outputGuard.ts`):
+  every agent's free-text output (`context`, `proposed_fix`, issue messages) is
+  untrusted input to the next stage; suspicious output is **quarantined to audit,
+  not dropped** (`guardVerdictOutput` returns an audit-ready payload and withholds
+  the verdict from resolution).
+- **Per-agent credential & egress scoping** (`src/core/governance/credentials.ts`):
+  deny-by-default registry mapping each agent to the exact secrets and egress
+  hosts it may use; `assertEgressAllowed`/`getScopedSecret` enforce it in code.
+  The HubSpot service key is scoped to `hubspot_admin` only.
+- Secret-scan + redact before any log/audit write (`src/core/audit/redact.ts`).
 
 ### Audit log (build-order step 2 — implemented)
 - Hash-chained (`src/core/audit/hashChain.ts`) → tamper-evident.
@@ -73,7 +78,7 @@ Extraction, Dev, CTO/Architect**.
 | 1 | Scaffold, config/secrets, full Postgres schema | ✅ done |
 | — | Core contracts: agent verdict schema + validation, audit hash-chain, untrusted-text sanitizer | ✅ done (foundation) |
 | 2 | Orchestrator (Security veto), safe/unsafe resolution, audit writer + off-box shipping | ✅ done |
-| 3 | Governance primitives wired into pipeline, secret scanning + log redaction | ⬜ todo |
+| 3 | Governance primitives wired into pipeline, secret scanning + log redaction | ✅ done |
 | 4 | Trigger registry: webhook (replay protection, constant-time sig, rate limits) + cron + on-demand | ⬜ todo |
 | 5 | HubSpot integration: Agent CLI wrapper + Projects API fallback + admin-mode owner resolution + egress allowlist | ⬜ todo |
 | 6 | Product A full path | ⬜ todo |
