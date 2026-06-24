@@ -130,6 +130,30 @@ LLM calls (extraction + board) sit behind the `LlmClient` port (Anthropic
 adapter + stub), so the pure logic (reconciliation, resolution, pipeline flow)
 is fully unit-tested without network.
 
+## Admin console (build-order step 7 — security core implemented)
+The highest-risk surface, so the security-critical logic is built as pure,
+unit-tested modules (`src/console/`); the console's HTTP routes + UI are thin
+wiring over these and are the remaining piece.
+- **Auth** (`console/auth/`):
+  - `totp.ts` — RFC 6238 MFA, constant-time, skew window, no deps.
+  - `password.ts` — pluggable `PasswordHasher` (built-in scrypt default; argon2id
+    is the documented production swap) + strength policy (zxcvbn is the prod
+    target; conservative built-in stand-in here).
+  - `hibp.ts` — HaveIBeenPwned **k-anonymity** breach check (only the 5-char
+    SHA-1 prefix leaves the process; suffix matched locally).
+  - `session.ts` — idle + absolute timeouts, server-side revocation, sudo
+    re-auth window, refresh tokens stored only as hashes (constant-time verify).
+  - `lockout.ts` — lockout transitions + `dummyVerify` for enumeration-resistant
+    timing.
+  - `csrf.ts` — double-submit token (constant-time).
+- **RBAC** (`console/rbac/`):
+  - `permissions.ts` — deny-by-default `resource:action` grants (+ wildcards).
+  - `sod.ts` — separation of duties: a subject's configurer **cannot
+    self-approve** it; enforced in code, evidenced in `sod_action_log`.
+- **Kill-switch** (`console/killswitch.ts`, migration 0002) — single shared flag
+  freezing all external writes; the meeting pipeline checks it and downgrades to
+  preview-only when engaged (no crash, still audited).
+
 ## Build order & status
 
 | Step | Description | Status |
@@ -141,7 +165,7 @@ is fully unit-tested without network.
 | 4 | Trigger registry: webhook (replay protection, constant-time sig, rate limits) + cron + on-demand | ✅ done |
 | 5 | HubSpot integration: Agent CLI wrapper + Projects API fallback + admin-mode owner resolution + egress allowlist | ✅ done |
 | 6 | Product A full path | ✅ done |
-| 7 | Admin console: auth + MFA + sudo-mode + SoD RBAC, editors, escalation queue, audit viewer, kill-switch | ⬜ todo |
+| 7 | Admin console: auth + MFA + sudo-mode + SoD RBAC, editors, escalation queue, audit viewer, kill-switch | 🟡 security core done; HTTP/UI wiring pending |
 | 8 | DO App Platform deploy (web + worker), append-only audit role, envelope keys | ⬜ todo |
 | 9 | Product B: sandboxed GitHub ingest → pre-scan → Dev/Security/CTO board → scorecard | ⬜ todo |
 

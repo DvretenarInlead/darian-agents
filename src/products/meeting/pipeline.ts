@@ -9,6 +9,7 @@ import type { ProjectInput, TaskInput } from '../../integrations/hubspot/types.j
 import type { Extractor } from './extract.js';
 import { reconcileItems } from './reconcile.js';
 import { runBoard, type BoardRunner, type BoardSubject } from './board.js';
+import { isEngaged } from '../../console/killswitch.js';
 
 /**
  * Product A pipeline (build-order step 6): extraction → reconciliation → batched
@@ -119,6 +120,11 @@ export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessIn
     }
   }
 
+  // Incident kill-switch: when engaged, never perform external writes —
+  // downgrade to preview-only so the run still produces an audited preview.
+  const frozen = await isEngaged(pool);
+  const effectiveApply = apply && !frozen;
+
   let synced = false;
   if (approvedItems.length > 0) {
     const existingProjectId = await findSyncedProject(pool, input.meetingId);
@@ -134,7 +140,7 @@ export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessIn
       ...(existingProjectId ? { existingProjectId } : {}),
       items: approvedItems,
     });
-    const outcome = await runSync(pool, deps.hubspot, plan, apply);
+    const outcome = await runSync(pool, deps.hubspot, plan, effectiveApply);
     synced = Boolean(outcome.result);
     await appendAudit(
       pool,
@@ -143,7 +149,7 @@ export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessIn
         product: 'meeting',
         actorId: null,
         subjectId: input.meetingId,
-        payload: { preview: outcome.preview, applied: synced },
+        payload: { preview: outcome.preview, applied: synced, killSwitchEngaged: frozen },
       },
       now(),
     );

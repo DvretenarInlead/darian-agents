@@ -63,6 +63,10 @@ src/
     anthropic/     LlmClient port + Anthropic adapter + stub (scoped egress/creds)
   products/
     meeting/       Product A: extraction, reconciliation, board, pipeline, query agent
+  console/
+    auth/          TOTP, password (scrypt), HIBP k-anonymity, sessions, lockout, CSRF
+    rbac/          Deny-by-default permissions + separation-of-duties
+    killswitch.ts  Incident kill-switch (freezes external writes)
   web/             Fastify plugins (hardened webhook receiver)
   index.ts         Web service entrypoint + health probes
 docs/              Architecture, security, and ISO compliance mapping
