@@ -10,6 +10,7 @@ import type { Extractor } from './extract.js';
 import { reconcileItems } from './reconcile.js';
 import { runBoard, type BoardRunner, type BoardSubject } from './board.js';
 import { isEngaged } from '../../console/killswitch.js';
+import { escalations as escalationsMetric, syncOutcomes } from '../../core/obs/metrics.js';
 
 /**
  * Product A pipeline (build-order step 6): extraction → reconciliation → batched
@@ -109,6 +110,7 @@ export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessIn
     }
   }
   const escalated = escalationRows.length;
+  if (escalated > 0) escalationsMetric.inc({ product: 'meeting' }, escalated);
 
   if (escalationRows.length > 0) {
     // One multi-row insert for all escalations.
@@ -146,6 +148,7 @@ export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessIn
     });
     const outcome = await runSync(pool, deps.hubspot, plan, effectiveApply);
     synced = Boolean(outcome.result);
+    syncOutcomes.inc({ outcome: synced ? 'applied' : 'previewed' });
     auditEvents.push({
       eventType: 'external_write',
       product: 'meeting',

@@ -2,6 +2,8 @@ import { config } from './config/index.js';
 import { getPool, closePool } from './core/db/index.js';
 import { claimJob, completeJob, failJob, retryDelaySec, type Job } from './core/queue/jobs.js';
 import { runConsumer, type JobHandler } from './core/queue/consumer.js';
+import { log, runWithCorrelation } from './core/obs/logger.js';
+import { jobsProcessed } from './core/obs/metrics.js';
 
 /**
  * Worker entrypoint (code-review P0). Drains the durable job queue and runs the
@@ -16,47 +18,52 @@ import { runConsumer, type JobHandler } from './core/queue/consumer.js';
  */
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** Wrap a handler so each job runs under its own correlation id. */
+const withCorrelation = (handler: JobHandler): JobHandler => (job) =>
+  runWithCorrelation(job.id, () => handler(job));
+
 const handlers: Record<string, JobHandler> = {
-  meeting_ingest: async (job: Job) => {
+  meeting_ingest: withCorrelation(async (job: Job) => {
     // TODO(meeting): fetch the transcript via the Fireflies adapter (pending API
     // confirmation), then call processMeeting(deps, { meetingId, transcript }).
-    log('info', 'meeting_ingest received', { jobId: job.id });
-  },
-  repo_score: async (job: Job) => {
+    log().info({ jobId: job.id }, 'meeting_ingest received');
+  }),
+  repo_score: withCorrelation(async (job: Job) => {
     // TODO(repo): clone into the sandbox, then call scoreRepo(deps, { repo, rootDir }).
-    log('info', 'repo_score received', { jobId: job.id });
-  },
+    log().info({ jobId: job.id }, 'repo_score received');
+  }),
 };
-
-function log(level: string, msg: string, extra: Record<string, unknown> = {}): void {
-  // eslint-disable-next-line no-console
-  console.log(JSON.stringify({ level, msg, ...extra }));
-}
 
 async function start(): Promise<void> {
   const cfg = config();
   const pool = getPool();
   await pool.query('SELECT 1'); // fail fast if the DB is unreachable
-  log('info', 'worker started', { env: cfg.env });
+  log().info({ env: cfg.env }, 'worker started');
 
   let stopping = false;
   const stopped = () => stopping;
   const shutdown = (signal: string) => {
     if (stopping) return;
     stopping = true;
-    log('info', 'worker draining for shutdown', { signal });
+    log().info({ signal }, 'worker draining for shutdown');
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
   await runConsumer({
     claim: () => claimJob(pool),
-    complete: (job) => completeJob(pool, job.id),
-    fail: (job, error) => failJob(pool, job, error, retryDelaySec(job.attempts)),
+    complete: (job) => {
+      jobsProcessed.inc({ kind: job.kind, outcome: 'done' });
+      return completeJob(pool, job.id);
+    },
+    fail: (job, error) => {
+      jobsProcessed.inc({ kind: job.kind, outcome: job.attempts >= job.maxAttempts ? 'dead' : 'retry' });
+      return failJob(pool, job, error, retryDelaySec(job.attempts));
+    },
     handlers,
     sleep,
     stopped,
-    onError: (job, err) => log('error', 'job failed', { jobId: job.id, kind: job.kind, err: String(err) }),
+    onError: (job, err) => log().error({ jobId: job.id, kind: job.kind, err: String(err) }, 'job failed'),
   });
 
   await closePool();

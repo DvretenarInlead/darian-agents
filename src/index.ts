@@ -4,6 +4,8 @@ import { getPool, closePool } from './core/db/index.js';
 import { createWebhookReceiver } from './web/webhookReceiver.js';
 import { appendAudit } from './core/audit/writer.js';
 import { enqueueJob } from './core/queue/jobs.js';
+import { enterCorrelation } from './core/obs/logger.js';
+import { registry, renderMetrics } from './core/obs/metrics.js';
 
 /**
  * Application entrypoint (web service). At this foundation stage it boots
@@ -15,8 +17,19 @@ export function buildServer() {
   const cfg = config();
   const app = Fastify({ logger: { level: cfg.logLevel } });
 
+  // Bind each request's id as the correlation id for logs + audit.
+  app.addHook('onRequest', async (req) => {
+    enterCorrelation(String(req.id));
+  });
+
   // Liveness — process is up.
   app.get('/healthz', async () => ({ status: 'ok' }));
+
+  // Prometheus metrics.
+  app.get('/metrics', async (_req, reply) => {
+    reply.header('content-type', registry.contentType);
+    return renderMetrics();
+  });
 
   // Readiness — dependencies reachable (DB ping).
   app.get('/readyz', async (_req, reply) => {
