@@ -35,14 +35,18 @@ Extraction, Dev, CTO/Architect**.
 - Prompts/model/enabled are editable from the console, stored in `agent_configs`,
   and **versioned**.
 
-### Orchestration & resolution (build-order step 2 — not yet implemented)
+### Orchestration & resolution (build-order step 2 — implemented)
 - Independent agents run in parallel.
-- Resolution consults the **safe/unsafe table** (`resolution_policy`): each
-  finding is either auto-fixed or escalated, with reversibility recorded.
-- **Security veto is non-overridable on its own domain**; **CTO breaks
-  non-security ties**.
-- A subject proceeds only if all required agents `pass` (or are auto-fixed to
-  pass). Everything is logged to `audit_log`.
+- Resolution (`src/core/orchestrator/resolution.ts`, pure/testable) consults the
+  **safe/unsafe table** (`resolution_policy`, loaded via `policy.ts`): each
+  finding is auto-fixed (only if reversible **and** policy-sanctioned) or
+  escalated, with reversibility recorded. Deny-by-default: anything not
+  positively classified escalates.
+- **Security veto is non-overridable on its own domain** — a failing Security
+  verdict on a security matter always routes to a human and can never be
+  tie-broken away. **CTO breaks ambiguous non-security ties.**
+- A subject proceeds only if all required agents `pass` (or every failure is a
+  reversible auto-fix). Everything is logged to `audit_log` via the writer.
 
 ### Governance layer
 - **Untrusted-input handling** (`src/core/agents/sanitize.ts`): strip control
@@ -53,10 +57,14 @@ Extraction, Dev, CTO/Architect**.
 - Per-agent scoped credentials, egress allowlist, secret-scan + redact before
   any log/audit write.
 
-### Audit log
+### Audit log (build-order step 2 — implemented)
 - Hash-chained (`src/core/audit/hashChain.ts`) → tamper-evident.
 - Append-only DB grant for the app role (no UPDATE/DELETE) → tamper-resistant.
-- Off-box shipping → survives console compromise.
+- Writer (`src/core/audit/writer.ts`) redacts secrets (`redact.ts`) **before**
+  hashing/storing, serialises appends with a transaction-scoped advisory lock so
+  the chain is computed against a stable tail, and writes `created_at`
+  explicitly so each row is independently re-verifiable.
+- Off-box shipping (best-effort, post-commit) → survives console compromise.
 
 ## Build order & status
 
@@ -64,7 +72,7 @@ Extraction, Dev, CTO/Architect**.
 |------|-------------|--------|
 | 1 | Scaffold, config/secrets, full Postgres schema | ✅ done |
 | — | Core contracts: agent verdict schema + validation, audit hash-chain, untrusted-text sanitizer | ✅ done (foundation) |
-| 2 | Orchestrator (Security veto), safe/unsafe resolution, audit writer + off-box shipping | ⬜ todo |
+| 2 | Orchestrator (Security veto), safe/unsafe resolution, audit writer + off-box shipping | ✅ done |
 | 3 | Governance primitives wired into pipeline, secret scanning + log redaction | ⬜ todo |
 | 4 | Trigger registry: webhook (replay protection, constant-time sig, rate limits) + cron + on-demand | ⬜ todo |
 | 5 | HubSpot integration: Agent CLI wrapper + Projects API fallback + admin-mode owner resolution + egress allowlist | ⬜ todo |
