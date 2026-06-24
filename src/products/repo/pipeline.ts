@@ -63,10 +63,10 @@ export async function scoreRepo(
   );
 
   const summary = buildSummary(input.repo, prescan.redactedFiles);
-  const dimensions: DimensionScore[] = [];
-  for (const reviewer of REPO_REVIEWERS) {
-    dimensions.push(await deps.reviewer.review(reviewer, summary));
-  }
+  // Reviewers are independent — run them concurrently.
+  const dimensions: DimensionScore[] = await Promise.all(
+    REPO_REVIEWERS.map((reviewer) => deps.reviewer.review(reviewer, summary)),
+  );
   const scorecard = aggregate(input.repo, dimensions);
 
   await appendAudit(
