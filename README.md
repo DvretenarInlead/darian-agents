@@ -55,8 +55,10 @@ src/
     agents/        Strict-JSON verdict contract + untrusted-text sanitizer
     orchestrator/  Board resolution (Security veto, CTO tie-break) + policy loader
     governance/    Per-agent credential/egress scoping + output-side injection guard
+    triggers/      Webhook verify/dedupe/rate-limit, cron locking, trigger registry
     audit/         Tamper-evident hash-chain, secret redaction, append-only writer
     db/            Shared pg pool
+  web/             Fastify plugins (hardened webhook receiver)
   index.ts         Web service entrypoint + health probes
 docs/              Architecture, security, and ISO compliance mapping
 ```

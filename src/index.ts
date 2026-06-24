@@ -1,6 +1,8 @@
 import Fastify from 'fastify';
 import { config } from './config/index.js';
 import { getPool, closePool } from './core/db/index.js';
+import { createWebhookReceiver } from './web/webhookReceiver.js';
+import { appendAudit } from './core/audit/writer.js';
 
 /**
  * Application entrypoint (web service). At this foundation stage it boots
@@ -25,6 +27,32 @@ export function buildServer() {
       return reply.code(503).send({ status: 'unavailable' });
     }
   });
+
+  // Webhook receiver (Product A ingestion). Registered only when a signing
+  // secret is configured; the verified delivery is recorded to the audit log
+  // and handed to the worker (full pipeline lands in a later build step).
+  if (cfg.fireflies.webhookSecret) {
+    void app.register(
+      createWebhookReceiver({
+        pool: getPool(),
+        secret: cfg.fireflies.webhookSecret,
+        toleranceSec: cfg.fireflies.timestampToleranceSec,
+        onVerified: async ({ source, deliveryId, body }) => {
+          await appendAudit(
+            getPool(),
+            {
+              eventType: 'ingest',
+              product: 'meeting',
+              actorId: null,
+              subjectId: deliveryId,
+              payload: { source, body },
+            },
+            new Date().toISOString(),
+          );
+        },
+      }),
+    );
+  }
 
   return app;
 }

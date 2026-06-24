@@ -71,6 +71,21 @@ Extraction, Dev, CTO/Architect**.
   explicitly so each row is independently re-verifiable.
 - Off-box shipping (best-effort, post-commit) → survives console compromise.
 
+### Trigger registry (build-order step 4 — implemented)
+Three trigger kinds in `trigger_configs`, loaded + spec-validated via
+`triggers/registry.ts`: `webhook`, `cron`, `on_demand`.
+- **Webhook receiver** (`web/webhookReceiver.ts`, Fastify plugin) layers, before
+  any worker sees the payload: body-size cap → rate limit by IP **and** source
+  (`triggers/rateLimiter.ts`) → constant-time HMAC over `${timestamp}.${body}`
+  (`triggers/webhookVerify.ts`, `crypto.timingSafeEqual`) → timestamp tolerance
+  window → delivery-ID replay dedupe (`triggers/dedupe.ts`, atomic
+  `ON CONFLICT DO NOTHING`). Every receipt is recorded for forensics; fresh
+  valid deliveries are audited and handed to the worker.
+- **Cron** runs are made idempotent across worker instances with a Postgres
+  advisory try-lock keyed by a stable hash of the job key
+  (`triggers/cronLock.ts`) — no double-fire, no blocking.
+- **On-demand** ("run now") triggers carry an `action` spec.
+
 ## Build order & status
 
 | Step | Description | Status |
@@ -79,7 +94,7 @@ Extraction, Dev, CTO/Architect**.
 | — | Core contracts: agent verdict schema + validation, audit hash-chain, untrusted-text sanitizer | ✅ done (foundation) |
 | 2 | Orchestrator (Security veto), safe/unsafe resolution, audit writer + off-box shipping | ✅ done |
 | 3 | Governance primitives wired into pipeline, secret scanning + log redaction | ✅ done |
-| 4 | Trigger registry: webhook (replay protection, constant-time sig, rate limits) + cron + on-demand | ⬜ todo |
+| 4 | Trigger registry: webhook (replay protection, constant-time sig, rate limits) + cron + on-demand | ✅ done |
 | 5 | HubSpot integration: Agent CLI wrapper + Projects API fallback + admin-mode owner resolution + egress allowlist | ⬜ todo |
 | 6 | Product A full path | ⬜ todo |
 | 7 | Admin console: auth + MFA + sudo-mode + SoD RBAC, editors, escalation queue, audit viewer, kill-switch | ⬜ todo |
