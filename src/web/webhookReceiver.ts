@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { Pool } from 'pg';
 import { verifyWebhook } from '../core/triggers/webhookVerify.js';
 import { recordDelivery } from '../core/triggers/dedupe.js';
-import { FixedWindowRateLimiter, checkAll } from '../core/triggers/rateLimiter.js';
+import { InMemoryRateLimiter, type RateLimiter } from '../core/triggers/rateLimiter.js';
 
 /**
  * Hardened webhook receiver (brief §1, build-order step 4).
@@ -32,6 +32,8 @@ export interface WebhookReceiverOptions {
   };
   /** Called for a fresh, verified delivery. Should enqueue, not process inline. */
   onVerified: (payload: { source: string; deliveryId: string; body: unknown }) => Promise<void> | void;
+  /** Shared rate limiter; defaults to per-instance in-memory. Use PgRateLimiter for multi-instance. */
+  limiter?: RateLimiter;
   /** Injectable clock for tests (unix seconds). */
   nowSec?: () => number;
 }
@@ -46,7 +48,7 @@ const DEFAULT_HEADERS = {
 export function createWebhookReceiver(opts: WebhookReceiverOptions): FastifyPluginAsync {
   const headers = { ...DEFAULT_HEADERS, ...opts.headers };
   const bodyLimit = opts.bodyLimitBytes ?? 1_000_000; // 1 MB default
-  const limiter = new FixedWindowRateLimiter(opts.rateLimit ?? { windowMs: 60_000, max: 120 });
+  const limiter = opts.limiter ?? new InMemoryRateLimiter(opts.rateLimit ?? { windowMs: 60_000, max: 120 });
   const now = opts.nowSec ?? (() => Math.floor(Date.now() / 1000));
 
   const plugin: FastifyPluginAsync = async (app: FastifyInstance) => {
@@ -67,7 +69,7 @@ export function createWebhookReceiver(opts: WebhookReceiverOptions): FastifyPlug
       const ip = req.ip;
       const source = (req.params as { source: string }).source;
 
-      const rl = checkAll(limiter, [`ip:${ip}`, `src:${source}`], nowMs);
+      const rl = await limiter.consume([`ip:${ip}`, `src:${source}`], nowMs);
       if (!rl.allowed) {
         return reply.code(429).header('retry-after', Math.ceil((rl.resetAtMs - nowMs) / 1000)).send({ error: 'rate_limited' });
       }

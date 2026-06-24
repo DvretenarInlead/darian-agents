@@ -31,10 +31,17 @@ function fakePool() {
     connect: async () => auditClient,
     query: async (sql: string, params: unknown[]) => {
       if (sql.includes('INSERT INTO reconciliation_ledger')) {
-        const h = params[1] as string;
-        if (seen.has(h)) return { rowCount: 0, rows: [] };
-        seen.add(h);
-        return { rowCount: 1, rows: [] };
+        // Batched insert: params[1] is the distinct hash array; RETURNING yields
+        // only the rows that did not already exist.
+        const hashes = params[1] as string[];
+        const fresh: { item_hash: string }[] = [];
+        for (const h of hashes) {
+          if (!seen.has(h)) {
+            seen.add(h);
+            fresh.push({ item_hash: h });
+          }
+        }
+        return { rowCount: fresh.length, rows: fresh };
       }
       if (sql.includes('FROM sync_log')) return { rows: [], rowCount: 0 };
       if (sql.includes('INSERT INTO sync_log')) {
@@ -42,8 +49,10 @@ function fakePool() {
         return { rowCount: 1, rows: [] };
       }
       if (sql.includes('INSERT INTO escalation_queue')) {
-        escalations.push(params);
-        return { rowCount: 1, rows: [] };
+        // Batched insert: params are parallel arrays; count = number of subjects.
+        const subjects = params[0] as string[];
+        escalations.push(...subjects.map((s) => [s]));
+        return { rowCount: subjects.length, rows: [] };
       }
       return { rows: [], rowCount: 0 };
     },

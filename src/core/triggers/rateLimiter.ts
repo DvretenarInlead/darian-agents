@@ -19,6 +19,26 @@ export interface RateLimitVerdict {
   resetAtMs: number;
 }
 
+/**
+ * Limiter abstraction the webhook receiver depends on. `consume` charges all the
+ * given keys (e.g. ip + source) and denies if ANY is over budget. In-memory and
+ * Postgres-backed implementations both satisfy it; the receiver doesn't care.
+ */
+export interface RateLimiter {
+  consume(keys: string[], nowMs: number): Promise<RateLimitVerdict>;
+}
+
+/** In-memory limiter (single instance). Wraps FixedWindowRateLimiter. */
+export class InMemoryRateLimiter implements RateLimiter {
+  private readonly impl: FixedWindowRateLimiter;
+  constructor(opts: RateLimitOptions) {
+    this.impl = new FixedWindowRateLimiter(opts);
+  }
+  async consume(keys: string[], nowMs: number): Promise<RateLimitVerdict> {
+    return checkAll(this.impl, keys, nowMs);
+  }
+}
+
 interface Bucket {
   count: number;
   resetAtMs: number;
