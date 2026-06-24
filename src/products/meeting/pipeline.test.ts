@@ -5,27 +5,7 @@ import { StubExtractor, type ActionItem } from './extract.js';
 import { type BoardRunner, type BoardSubject } from './board.js';
 import { InMemoryHubSpotClient } from '../../integrations/hubspot/client.js';
 import { type BoardAgent, type Verdict } from '../../core/agents/contract.js';
-
-const DOMAINS: Record<BoardAgent, string> = {
-  project_manager: 'project_management',
-  hubspot_admin: 'crm',
-  security: 'security',
-  data_quality: 'data_quality',
-  dev: 'engineering',
-  cto: 'architecture',
-};
-
-const pass = (agent: BoardAgent, subjectId: string, over: Partial<Verdict> = {}): Verdict => ({
-  agent,
-  subject_id: subjectId,
-  domain: DOMAINS[agent],
-  disposition: 'pass',
-  confidence: 0.9,
-  issues: [],
-  proposed_fix: null,
-  context: null,
-  ...over,
-});
+import { makeVerdict as pass } from '../../test/factories.js';
 
 class StubRunner implements BoardRunner {
   constructor(private readonly fn: (agent: BoardAgent, subjects: BoardSubject[]) => Verdict[]) {}
