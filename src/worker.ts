@@ -1,35 +1,66 @@
 import { config } from './config/index.js';
 import { getPool, closePool } from './core/db/index.js';
+import { claimJob, completeJob, failJob, retryDelaySec, type Job } from './core/queue/jobs.js';
+import { runConsumer, type JobHandler } from './core/queue/consumer.js';
 
 /**
- * Worker entrypoint (build-order step 8). Runs async jobs off the main web
- * service: meeting extraction → board → HubSpot sync, repo scoring, cron-locked
- * scheduled work. At this stage it boots, validates config, verifies DB
- * connectivity, and idles; the job-queue consumer wiring (pulling enqueued
- * webhook deliveries / on-demand runs through processMeeting / scoreRepo) is the
- * remaining integration piece and attaches here.
+ * Worker entrypoint (code-review P0). Drains the durable job queue and runs the
+ * product pipelines. Many worker instances can run concurrently — claimJob uses
+ * FOR UPDATE SKIP LOCKED so each grabs a distinct job. Failures re-queue with
+ * backoff until max_attempts, then dead-letter.
+ *
+ * Handlers are registered by kind. The meeting_ingest handler needs the
+ * Fireflies transcript fetch (a thin adapter, pending API confirmation) before
+ * it can run the full pipeline end-to-end; it is intentionally a clear stub so
+ * the queue/worker machinery is complete and testable now.
  */
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+const handlers: Record<string, JobHandler> = {
+  meeting_ingest: async (job: Job) => {
+    // TODO(meeting): fetch the transcript via the Fireflies adapter (pending API
+    // confirmation), then call processMeeting(deps, { meetingId, transcript }).
+    log('info', 'meeting_ingest received', { jobId: job.id });
+  },
+  repo_score: async (job: Job) => {
+    // TODO(repo): clone into the sandbox, then call scoreRepo(deps, { repo, rootDir }).
+    log('info', 'repo_score received', { jobId: job.id });
+  },
+};
+
+function log(level: string, msg: string, extra: Record<string, unknown> = {}): void {
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify({ level, msg, ...extra }));
+}
+
 async function start(): Promise<void> {
   const cfg = config();
   const pool = getPool();
   await pool.query('SELECT 1'); // fail fast if the DB is unreachable
-  // eslint-disable-next-line no-console
-  console.log(JSON.stringify({ level: 'info', msg: 'worker started', env: cfg.env }));
+  log('info', 'worker started', { env: cfg.env });
 
   let stopping = false;
-  const shutdown = async (signal: string) => {
+  const stopped = () => stopping;
+  const shutdown = (signal: string) => {
     if (stopping) return;
     stopping = true;
-    // eslint-disable-next-line no-console
-    console.log(JSON.stringify({ level: 'info', msg: 'worker shutting down', signal }));
-    await closePool();
-    process.exit(0);
+    log('info', 'worker draining for shutdown', { signal });
   };
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // Idle until a signal arrives; the queue consumer loop will live here.
-  await new Promise<void>(() => {});
+  await runConsumer({
+    claim: () => claimJob(pool),
+    complete: (job) => completeJob(pool, job.id),
+    fail: (job, error) => failJob(pool, job, error, retryDelaySec(job.attempts)),
+    handlers,
+    sleep,
+    stopped,
+    onError: (job, err) => log('error', 'job failed', { jobId: job.id, kind: job.kind, err: String(err) }),
+  });
+
+  await closePool();
+  process.exit(0);
 }
 
 start().catch((err) => {

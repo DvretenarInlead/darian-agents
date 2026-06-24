@@ -3,6 +3,7 @@ import { config } from './config/index.js';
 import { getPool, closePool } from './core/db/index.js';
 import { createWebhookReceiver } from './web/webhookReceiver.js';
 import { appendAudit } from './core/audit/writer.js';
+import { enqueueJob } from './core/queue/jobs.js';
 
 /**
  * Application entrypoint (web service). At this foundation stage it boots
@@ -29,8 +30,9 @@ export function buildServer() {
   });
 
   // Webhook receiver (Product A ingestion). Registered only when a signing
-  // secret is configured; the verified delivery is recorded to the audit log
-  // and handed to the worker (full pipeline lands in a later build step).
+  // secret is configured. A verified delivery is audited and ENQUEUED as a
+  // durable job (idempotent on the delivery id); the worker drains the queue and
+  // runs the meeting pipeline — decoupling burst ingestion from slow LLM work.
   if (cfg.fireflies.webhookSecret) {
     void app.register(
       createWebhookReceiver({
@@ -38,17 +40,17 @@ export function buildServer() {
         secret: cfg.fireflies.webhookSecret,
         toleranceSec: cfg.fireflies.timestampToleranceSec,
         onVerified: async ({ source, deliveryId, body }) => {
+          const pool = getPool();
           await appendAudit(
-            getPool(),
-            {
-              eventType: 'ingest',
-              product: 'meeting',
-              actorId: null,
-              subjectId: deliveryId,
-              payload: { source, body },
-            },
+            pool,
+            { eventType: 'ingest', product: 'meeting', actorId: null, subjectId: deliveryId, payload: { source, body } },
             new Date().toISOString(),
           );
+          await enqueueJob(pool, {
+            kind: 'meeting_ingest',
+            payload: { source, deliveryId, body },
+            dedupeKey: `meeting_ingest:${deliveryId}`,
+          });
         },
       }),
     );
