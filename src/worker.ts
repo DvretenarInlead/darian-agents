@@ -1,20 +1,20 @@
 import { config } from './config/index.js';
 import { getPool, closePool } from './core/db/index.js';
-import { claimJob, completeJob, failJob, retryDelaySec, type Job } from './core/queue/jobs.js';
+import { claimJob, completeJob, failJob, retryDelaySec } from './core/queue/jobs.js';
 import { runConsumer, type JobHandler } from './core/queue/consumer.js';
 import { log, runWithCorrelation } from './core/obs/logger.js';
 import { jobsProcessed } from './core/obs/metrics.js';
+import { AnthropicLlmClient } from './integrations/anthropic/client.js';
+import { GraphqlFirefliesClient } from './integrations/fireflies/client.js';
+import { createHubSpotClient } from './integrations/hubspot/index.js';
+import { makeMeetingHandler } from './products/meeting/handler.js';
+import { makeRepoHandler } from './products/repo/handler.js';
 
 /**
  * Worker entrypoint (code-review P0). Drains the durable job queue and runs the
- * product pipelines. Many worker instances can run concurrently — claimJob uses
- * FOR UPDATE SKIP LOCKED so each grabs a distinct job. Failures re-queue with
- * backoff until max_attempts, then dead-letter.
- *
- * Handlers are registered by kind. The meeting_ingest handler needs the
- * Fireflies transcript fetch (a thin adapter, pending API confirmation) before
- * it can run the full pipeline end-to-end; it is intentionally a clear stub so
- * the queue/worker machinery is complete and testable now.
+ * product pipelines end-to-end. Many worker instances can run concurrently —
+ * claimJob uses FOR UPDATE SKIP LOCKED so each grabs a distinct job. Failures
+ * re-queue with backoff until max_attempts, then dead-letter.
  */
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -22,23 +22,28 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const withCorrelation = (handler: JobHandler): JobHandler => (job) =>
   runWithCorrelation(job.id, () => handler(job));
 
-const handlers: Record<string, JobHandler> = {
-  meeting_ingest: withCorrelation(async (job: Job) => {
-    // TODO(meeting): fetch the transcript via the Fireflies adapter (pending API
-    // confirmation), then call processMeeting(deps, { meetingId, transcript }).
-    log().info({ jobId: job.id }, 'meeting_ingest received');
-  }),
-  repo_score: withCorrelation(async (job: Job) => {
-    // TODO(repo): clone into the sandbox, then call scoreRepo(deps, { repo, rootDir }).
-    log().info({ jobId: job.id }, 'repo_score received');
-  }),
-};
-
 async function start(): Promise<void> {
   const cfg = config();
   const pool = getPool();
   await pool.query('SELECT 1'); // fail fast if the DB is unreachable
   log().info({ env: cfg.env }, 'worker started');
+
+  const llm = new AnthropicLlmClient();
+  const handlers: Record<string, JobHandler> = {
+    meeting_ingest: withCorrelation(
+      makeMeetingHandler({
+        pool,
+        fireflies: new GraphqlFirefliesClient(),
+        llm,
+        hubspot: createHubSpotClient(),
+        projectDefaults: {
+          pipeline: process.env.HUBSPOT_PROJECT_PIPELINE ?? 'default',
+          pipelineStage: process.env.HUBSPOT_PROJECT_STAGE ?? 'new',
+        },
+      }),
+    ),
+    repo_score: withCorrelation(makeRepoHandler({ pool, llm })),
+  };
 
   let stopping = false;
   const stopped = () => stopping;
