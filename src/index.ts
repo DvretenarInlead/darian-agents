@@ -25,6 +25,13 @@ export function buildServer() {
   // Liveness — process is up.
   app.get('/healthz', async () => ({ status: 'ok' }));
 
+  // Root: service info so `/` isn't a bare 404. Lists the real endpoints.
+  app.get('/', async () => ({
+    service: 'darian-agents',
+    status: 'ok',
+    endpoints: ['/healthz', '/readyz', '/metrics', 'POST /webhooks/:source'],
+  }));
+
   // Prometheus metrics.
   app.get('/metrics', async (_req, reply) => {
     reply.header('content-type', registry.contentType);

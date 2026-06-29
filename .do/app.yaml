@@ -1,10 +1,13 @@
 # DigitalOcean App Platform spec (build-order step 8).
 #
 # One web service (Fastify: webhook receiver + console API + health probes) and
-# one worker (async jobs: extraction, board, sync). Both connect to DO Managed
-# Postgres as the least-privilege app_rw role (see scripts/provision-roles.sql)
-# which has INSERT+SELECT-only on audit_log. Secrets are App Platform secrets —
-# never in the repo; values below are SECRET-typed placeholders.
+# one worker (async jobs). They connect at RUNTIME as the least-privilege
+# `app_rw` role (DATABASE_URL secret = the app_rw connection string), which has
+# INSERT+SELECT-only on audit_log so the append-only guarantee actually holds.
+# The PRE_DEPLOY migrate job connects as the DB ADMIN (the bound
+# ${darian-pg.DATABASE_URL}) because it needs DDL (CREATE TABLE/EXTENSION) and
+# to grant app_rw. Provision app_rw first via scripts/provision-roles.sql.
+# Secrets are App Platform secrets — never in the repo.
 name: darian-agents
 region: nyc
 
@@ -25,8 +28,10 @@ services:
     build_command: pnpm install --frozen-lockfile && pnpm build
     envs: &app_envs
       - { key: NODE_ENV, value: production }
-      - { key: DATABASE_URL, scope: RUN_TIME, value: ${darian-pg.DATABASE_URL} }
+      # Least-privilege app_rw connection string (NOT the admin/doadmin URL).
+      - { key: DATABASE_URL, scope: RUN_TIME, type: SECRET }
       - { key: DATABASE_SSL, value: "true" }
+      - { key: DATABASE_POOL_MAX, value: "10" }
       - { key: ENVELOPE_MASTER_KEY, scope: RUN_TIME, type: SECRET }
       - { key: ENVELOPE_KEY_VERSION, value: "1" }
       - { key: ANTHROPIC_API_KEY, scope: RUN_TIME, type: SECRET }
@@ -54,4 +59,9 @@ jobs:
     instance_size_slug: basic-xs
     run_command: node dist/scripts/migrate.js
     build_command: pnpm install --frozen-lockfile && pnpm build
-    envs: *app_envs
+    # Migrations run as the DB admin (DDL + grants), not app_rw.
+    envs:
+      - { key: NODE_ENV, value: production }
+      - { key: DATABASE_URL, scope: RUN_TIME, value: ${darian-pg.DATABASE_URL} }
+      - { key: DATABASE_SSL, value: "true" }
+
