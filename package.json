@@ -15,12 +15,15 @@
     "start": "node dist/src/index.js",
     "migrate": "tsx scripts/migrate.ts",
     "check-env": "tsx scripts/check-env.ts",
+    "create-admin": "tsx scripts/create-admin.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "lint": "eslint . --ext .ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/formbody": "^8.0.2",
     "@node-rs/argon2": "^2.0.2",
     "@zxcvbn-ts/core": "^4.1.2",
     "@zxcvbn-ts/language-common": "^4.1.2",
