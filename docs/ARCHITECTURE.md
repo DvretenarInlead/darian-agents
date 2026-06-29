@@ -188,6 +188,11 @@ On-demand pipeline (`products/repo/`):
 ## Scalability & operations (enterprise hardening)
 
 Layered on the build-order steps after a code review:
+- **End-to-end worker handlers** — `meeting_ingest` fetches the transcript via
+  the Fireflies adapter (`integrations/fireflies/`) then runs `processMeeting`;
+  `repo_score` shallow-clones (`integrations/github/clone.ts`: no hooks, depth 1,
+  ephemeral, auto-removed) then runs `scoreRepo`. So a verified webhook now flows
+  all the way to HubSpot Projects/Tasks.
 - **Async decoupling** — the webhook receiver enqueues a durable job
   (`jobs` table, migration 0003, idempotent on delivery id); worker instances
   claim with `FOR UPDATE SKIP LOCKED` and run the pipeline. Many workers drain
