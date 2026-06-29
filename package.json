@@ -9,18 +9,24 @@
   },
   "packageManager": "pnpm@9.0.0",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js",
+    "start": "node dist/src/index.js",
     "migrate": "tsx scripts/migrate.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "lint": "eslint . --ext .ts"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "@zxcvbn-ts/core": "^4.1.2",
+    "@zxcvbn-ts/language-common": "^4.1.2",
     "fastify": "^5.7.2",
     "pg": "^8.12.0",
+    "pino": "^10.3.1",
+    "prom-client": "^15.1.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {

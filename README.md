@@ -56,8 +56,11 @@ src/
     orchestrator/  Board resolution (Security veto, CTO tie-break) + policy loader
     governance/    Per-agent credential/egress scoping + output-side injection guard
     triggers/      Webhook verify/dedupe/rate-limit, cron locking, trigger registry
-    audit/         Tamper-evident hash-chain, secret redaction, append-only writer
+    audit/         Tamper-evident hash-chain, secret redaction, batched append-only writer
     crypto/        App-level envelope encryption (AES-256-GCM, key-versioned)
+    queue/         Durable job queue (outbox) + consumer loop
+    net/           Resilient fetch (timeout, retry+jitter, circuit breaker)
+    obs/           Structured logger (correlation ids) + Prometheus metrics
     db/            Shared pg pool
   integrations/
     hubspot/       HubSpotClient port + Agent CLI / Projects-API / in-memory adapters, plan + sync

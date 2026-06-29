@@ -1,4 +1,7 @@
 import { randomBytes, scrypt, timingSafeEqual, type ScryptOptions } from 'node:crypto';
+import { hash as argon2Hash, verify as argon2Verify, Algorithm } from '@node-rs/argon2';
+import { ZxcvbnFactory } from '@zxcvbn-ts/core';
+import { dictionary, adjacencyGraphs } from '@zxcvbn-ts/language-common';
 
 /** Promisified scrypt that preserves the options-object overload. */
 function scryptAsync(password: string, salt: Buffer, keylen: number, options: ScryptOptions): Promise<Buffer> {
@@ -54,26 +57,67 @@ export class ScryptHasher implements PasswordHasher {
   }
 }
 
+/**
+ * Production hasher: argon2id (the brief's target). verify() also accepts legacy
+ * `scrypt$` hashes and delegates to ScryptHasher, so accounts created before the
+ * swap keep working and can be transparently re-hashed on next login.
+ */
+export class Argon2idHasher implements PasswordHasher {
+  private readonly scrypt = new ScryptHasher();
+
+  async hash(password: string): Promise<string> {
+    return argon2Hash(password, { algorithm: Algorithm.Argon2id });
+  }
+
+  async verify(password: string, stored: string): Promise<boolean> {
+    if (stored.startsWith('scrypt$')) return this.scrypt.verify(password, stored);
+    try {
+      return await argon2Verify(stored, password);
+    } catch {
+      return false;
+    }
+  }
+
+  /** True if a stored hash should be upgraded to argon2id on next successful login. */
+  needsRehash(stored: string): boolean {
+    return !stored.startsWith('$argon2id$');
+  }
+}
+
+/** The default production hasher. */
+export function defaultHasher(): PasswordHasher {
+  return new Argon2idHasher();
+}
+
 export interface StrengthResult {
   ok: boolean;
   reasons: string[];
 }
 
-const COMMON = new Set(['password', 'qwerty', '12345678', 'letmein', 'admin', 'welcome', 'iloveyou']);
-
 /**
- * Lightweight, dependency-free strength check (length + character variety +
- * common-password reject). The brief's production target is **zxcvbn**; this is
- * a deliberately conservative stand-in that callers can replace, kept here so
- * the policy is enforced even before zxcvbn is wired in.
+ * zxcvbn-based strength check (the brief's production target). Requires a
+ * minimum length plus a zxcvbn score of ≥ 3 (0–4 scale), and surfaces zxcvbn's
+ * own feedback as reasons. zxcvbn catches weak-but-"complex" passwords that a
+ * character-class rule misses (e.g. "P@ssw0rd123").
  */
+let zxcvbnInstance: ZxcvbnFactory | undefined;
+function zxcvbn(): ZxcvbnFactory {
+  if (!zxcvbnInstance) {
+    zxcvbnInstance = new ZxcvbnFactory({ dictionary, graphs: adjacencyGraphs });
+  }
+  return zxcvbnInstance;
+}
+
+export const MIN_PASSWORD_LENGTH = 12;
+export const MIN_ZXCVBN_SCORE = 3;
+
 export function checkPasswordStrength(password: string): StrengthResult {
   const reasons: string[] = [];
-  if (password.length < 12) reasons.push('must be at least 12 characters');
-  if (!/[a-z]/.test(password)) reasons.push('needs a lowercase letter');
-  if (!/[A-Z]/.test(password)) reasons.push('needs an uppercase letter');
-  if (!/[0-9]/.test(password)) reasons.push('needs a digit');
-  if (!/[^A-Za-z0-9]/.test(password)) reasons.push('needs a symbol');
-  if (COMMON.has(password.toLowerCase())) reasons.push('is a commonly-used password');
+  if (password.length < MIN_PASSWORD_LENGTH) reasons.push(`must be at least ${MIN_PASSWORD_LENGTH} characters`);
+  const result = zxcvbn().check(password);
+  if (result.score < MIN_ZXCVBN_SCORE) {
+    reasons.push(result.feedback.warning || 'is too weak or guessable');
+    for (const s of result.feedback.suggestions) reasons.push(s);
+  }
   return { ok: reasons.length === 0, reasons };
 }

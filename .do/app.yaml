@@ -21,7 +21,7 @@ services:
     http_port: 8080
     health_check:
       http_path: /readyz
-    run_command: node dist/index.js
+    run_command: node dist/src/index.js
     build_command: pnpm install --frozen-lockfile && pnpm build
     envs: &app_envs
       - { key: NODE_ENV, value: production }
@@ -44,7 +44,7 @@ workers:
   - name: worker
     instance_count: 1
     instance_size_slug: basic-xs
-    run_command: node dist/worker.js
+    run_command: node dist/src/worker.js
     build_command: pnpm install --frozen-lockfile && pnpm build
     envs: *app_envs
 
@@ -52,6 +52,6 @@ jobs:
   - name: migrate
     kind: PRE_DEPLOY
     instance_size_slug: basic-xs
-    run_command: pnpm migrate
+    run_command: node dist/scripts/migrate.js
     build_command: pnpm install --frozen-lockfile && pnpm build
     envs: *app_envs
