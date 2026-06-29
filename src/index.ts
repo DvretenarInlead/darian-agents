@@ -6,6 +6,10 @@ import { appendAudit } from './core/audit/writer.js';
 import { enqueueJob } from './core/queue/jobs.js';
 import { enterCorrelation } from './core/obs/logger.js';
 import { registry, renderMetrics } from './core/obs/metrics.js';
+import { createConsole } from './console/web/plugin.js';
+import { PgUsersRepo, PgSessionsRepo } from './console/web/repos.js';
+import { defaultHasher } from './console/auth/password.js';
+import { keyringFromConfig } from './core/crypto/envelope.js';
 
 /**
  * Application entrypoint (web service). At this foundation stage it boots
@@ -29,7 +33,7 @@ export function buildServer() {
   app.get('/', async () => ({
     service: 'darian-agents',
     status: 'ok',
-    endpoints: ['/healthz', '/readyz', '/metrics', 'POST /webhooks/:source'],
+    endpoints: ['/console', '/healthz', '/readyz', '/metrics', 'POST /webhooks/:source'],
   }));
 
   // Prometheus metrics.
@@ -75,6 +79,24 @@ export function buildServer() {
       }),
     );
   }
+
+  // Admin console (server-rendered UI + auth). Mounted under /console.
+  void app.register(
+    createConsole({
+      pool: getPool(),
+      users: new PgUsersRepo(getPool()),
+      sessions: new PgSessionsRepo(getPool()),
+      hasher: defaultHasher(),
+      now: () => new Date(),
+      secureCookies: cfg.env === 'production',
+      ttls: {
+        idleSec: cfg.session.idleTtlSec,
+        absoluteSec: cfg.session.absoluteTtlSec,
+        sudoWindowSec: cfg.session.sudoWindowSec,
+      },
+      ...(cfg.envelope.masterKey ? { keyring: keyringFromConfig() } : {}),
+    }),
+  );
 
   return app;
 }

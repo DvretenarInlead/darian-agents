@@ -224,7 +224,7 @@ Layered on the build-order steps after a code review:
 | 4 | Trigger registry: webhook (replay protection, constant-time sig, rate limits) + cron + on-demand | ✅ done |
 | 5 | HubSpot integration: Agent CLI wrapper + Projects API fallback + admin-mode owner resolution + egress allowlist | ✅ done |
 | 6 | Product A full path | ✅ done |
-| 7 | Admin console: auth + MFA + sudo-mode + SoD RBAC, editors, escalation queue, audit viewer, kill-switch | 🟡 security core done; HTTP/UI wiring pending |
+| 7 | Admin console: auth + MFA + sudo-mode + SoD RBAC, editors, escalation queue, audit viewer, kill-switch | ✅ done (server-rendered console at /console) |
 | 8 | DO App Platform deploy (web + worker), append-only audit role, envelope keys | ✅ done |
 | 9 | Product B: sandboxed GitHub ingest → pre-scan → Dev/Security/CTO board → scorecard | ✅ done |
 
