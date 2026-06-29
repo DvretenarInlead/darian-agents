@@ -14,6 +14,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/src/index.js",
     "migrate": "tsx scripts/migrate.ts",
+    "check-env": "tsx scripts/check-env.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",

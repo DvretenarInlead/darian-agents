@@ -160,7 +160,12 @@ wiring over these and are the remaining piece.
   on DO Managed Postgres. Secrets are App Platform secrets (SECRET-typed), never
   in the repo.
 - **Least-privilege role** — `scripts/provision-roles.sql` creates `app_rw`; the
-  migrations grant it INSERT+SELECT-only on `audit_log` (append-only).
+  migrations grant it INSERT+SELECT-only on `audit_log` (append-only). The
+  **migrate job runs as the DB admin** (DDL + grants); the **web/worker run as
+  `app_rw`** (`DATABASE_URL` secret = the app_rw connection string), so the
+  append-only guarantee actually holds at runtime.
+- **`pnpm check-env`** (`scripts/check-env.ts`) — preflight that fails fast and
+  lists which secrets are set vs missing per feature.
 - **Envelope encryption** (`core/crypto/envelope.ts`) — per-record AES-256-GCM
   data key wrapped by the master KEK; self-describing, key-versioned blob so the
   KEK rotates while old records stay readable. Used for `raw_artifacts.content_enc`
