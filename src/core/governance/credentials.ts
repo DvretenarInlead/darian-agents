@@ -14,7 +14,7 @@ import { AGENTS, type AgentName } from '../agents/contract.js';
  * (console layer, later step) — scoping here is necessary, not sufficient.
  */
 
-export type ScopedSecret = 'anthropic' | 'fireflies' | 'hubspotAccess' | 'hubspotService' | 'github' | 'elevenlabs';
+export type ScopedSecret = 'anthropic' | 'fireflies' | 'hubspotAccess' | 'hubspotService' | 'github' | 'elevenlabs' | 'slack';
 
 /** Canonical egress host for each external dependency. */
 export const EGRESS_HOSTS: Record<Exclude<ScopedSecret, 'hubspotService'>, string> = {
@@ -23,6 +23,7 @@ export const EGRESS_HOSTS: Record<Exclude<ScopedSecret, 'hubspotService'>, strin
   hubspotAccess: 'api.hubapi.com',
   github: 'api.github.com',
   elevenlabs: 'api.elevenlabs.io',
+  slack: 'slack.com',
 };
 
 export interface AgentScope {
@@ -37,7 +38,8 @@ const ANTHROPIC: AgentScope = { secrets: ['anthropic'], egress: [EGRESS_HOSTS.an
  * data/tools each may additionally touch. Kept narrow on purpose.
  */
 const AGENT_SCOPES: Record<AgentName, AgentScope> = {
-  orchestrator: ANTHROPIC,
+  // Orchestrator also owns owner notifications (Slack pings after pipeline runs).
+  orchestrator: { secrets: ['anthropic', 'slack'], egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.slack] },
   project_manager: ANTHROPIC,
   cto: ANTHROPIC,
   // Extraction reads Fireflies transcripts.
@@ -90,6 +92,7 @@ const SECRET_RESOLVERS: Record<ScopedSecret, () => string | undefined> = {
   hubspotService: () => config().hubspot.serviceKey,
   github: () => config().github.token,
   elevenlabs: () => config().elevenlabs.apiKey,
+  slack: () => config().slack.botToken,
 };
 
 /**

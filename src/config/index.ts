@@ -56,6 +56,10 @@ const envSchema = z.object({
   /** Shared secret for the platform MCP server (/mcp); the route registers only when set. */
   MCP_ACCESS_TOKEN: z.string().min(16).optional(),
 
+  /** Slack pings (bot token + target channel). Both set → the notifier activates. */
+  SLACK_BOT_TOKEN: z.string().optional(),
+  SLACK_CHANNEL_ID: z.string().optional(),
+
   /** ElevenLabs (assistant voice: TTS + STT). Unset → HUD falls back to browser voice. */
   ELEVENLABS_API_KEY: z.string().optional(),
   ELEVENLABS_VOICE_ID: z.string().default('21m00Tcm4TlvDq8ikWAM'),
@@ -90,6 +94,7 @@ export interface Config {
   github: { token: string | undefined };
   assistant: { accessToken: string | undefined; allowedIps: string[] };
   mcp: { accessToken: string | undefined };
+  slack: { botToken: string | undefined; channelId: string | undefined };
   elevenlabs: { apiKey: string | undefined; voiceId: string };
   trustProxy: boolean;
   session: { accessTtlSec: number; idleTtlSec: number; absoluteTtlSec: number; sudoWindowSec: number };
@@ -119,6 +124,7 @@ function build(raw: RawEnv): Config {
     github: { token: raw.GITHUB_TOKEN },
     assistant: { accessToken: raw.ASSISTANT_ACCESS_TOKEN, allowedIps: csv(raw.ASSISTANT_ALLOWED_IPS) },
     mcp: { accessToken: raw.MCP_ACCESS_TOKEN },
+    slack: { botToken: raw.SLACK_BOT_TOKEN, channelId: raw.SLACK_CHANNEL_ID },
     elevenlabs: { apiKey: raw.ELEVENLABS_API_KEY, voiceId: raw.ELEVENLABS_VOICE_ID },
     trustProxy: raw.TRUST_PROXY,
     session: {

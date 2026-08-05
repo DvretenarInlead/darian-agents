@@ -48,6 +48,8 @@ export interface AssistantRoutesOptions {
   voice?: VoiceClient;
   /** Read-only Fireflies lookup tools for the assistant; omit → ledger-only. */
   fireflies?: AssistantDeps['fireflies'];
+  /** HubSpot task tools for voice commands; writes are kill-switch gated. */
+  taskOps?: AssistantDeps['taskOps'];
   /** Shared secret the HUD presents as `Authorization: Bearer <token>`. */
   accessToken: string;
   /** IPs/CIDRs allowed to reach the assistant at all. Empty = deny everyone. */
@@ -158,6 +160,7 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
             llm: opts.llm,
             ...(opts.model ? { model: opts.model } : {}),
             ...(opts.fireflies ? { fireflies: opts.fireflies } : {}),
+            ...(opts.taskOps ? { taskOps: opts.taskOps } : {}),
           },
           question,
           history,

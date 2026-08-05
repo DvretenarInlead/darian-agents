@@ -130,6 +130,8 @@ export function buildServer() {
         ...(cfg.elevenlabs.apiKey ? { voice: new ElevenLabsVoiceClient() } : {}),
         // Meeting-lookup tools (read-only, scoped to the assistant agent).
         ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
+        // HubSpot task tools for voice commands (kill-switch gated writes).
+        ...(cfg.hubspot.accessToken ? { taskOps: new ProjectsApiHubSpotClient() } : {}),
       }),
     );
   }
