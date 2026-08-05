@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
@@ -103,6 +104,92 @@ describe('webhook receiver', () => {
     const sig = computeSignature(secret, ts, body);
     await post(app2, body, sig, 'x1');
     await post(app2, body, 'badsig', 'x2');
+    expect(calls).toBe(1);
+  });
+});
+
+describe('webhook receiver — fireflies mode', () => {
+  const ffSecret = 'fireflies-shared-secret';
+
+  async function buildFf(onVerified: (p: { source: string; deliveryId: string; body: unknown }) => void = () => {}) {
+    const app = Fastify();
+    await app.register(
+      createWebhookReceiver({
+        pool: stubPool(),
+        secret: ffSecret,
+        toleranceSec: 300,
+        mode: 'fireflies',
+        nowSec: () => ts,
+        onVerified,
+      }),
+    );
+    await app.ready();
+    return app;
+  }
+
+  function ffSig(body: string): string {
+    return 'sha256=' + createHmac('sha256', ffSecret).update(body).digest('hex');
+  }
+
+  function ffPost(app: FastifyInstance, body: string, signature?: string) {
+    return app.inject({
+      method: 'POST',
+      url: '/webhooks/fireflies',
+      headers: {
+        'content-type': 'application/json',
+        ...(signature !== undefined ? { 'x-hub-signature': signature } : {}),
+      },
+      payload: body,
+    });
+  }
+
+  it('accepts a correctly signed Fireflies payload (202) and passes the meeting body through', async () => {
+    let seen: { source: string; deliveryId: string; body: unknown } | null = null;
+    const app = await buildFf((p) => {
+      seen = p;
+    });
+    const body = JSON.stringify({ meetingId: 'ASxwZxCstx', eventType: 'Transcription completed' });
+
+    const res = await ffPost(app, body, ffSig(body));
+    expect(res.statusCode).toBe(202);
+    expect(seen!.source).toBe('fireflies');
+    expect(seen!.deliveryId).toMatch(/^ff-[0-9a-f]{32}$/);
+    expect((seen!.body as { meetingId: string }).meetingId).toBe('ASxwZxCstx');
+  });
+
+  it('accepts the signature with or without the sha256= prefix', async () => {
+    const app = await buildFf();
+    const body = JSON.stringify({ meetingId: 'm-prefix', eventType: 'Transcription completed' });
+    const bare = createHmac('sha256', ffSecret).update(body).digest('hex');
+    expect((await ffPost(app, body, bare)).statusCode).toBe(202);
+  });
+
+  it('rejects a wrong signature (401) without calling onVerified', async () => {
+    let calls = 0;
+    const app = await buildFf(() => {
+      calls += 1;
+    });
+    const body = JSON.stringify({ meetingId: 'm-bad' });
+    const res = await ffPost(app, body, 'sha256=' + 'ab'.repeat(32));
+    expect(res.statusCode).toBe(401);
+    expect(calls).toBe(0);
+  });
+
+  it('400s when x-hub-signature is missing', async () => {
+    const app = await buildFf();
+    expect((await ffPost(app, '{}')).statusCode).toBe(400);
+  });
+
+  it('deduplicates identical deliveries by body hash (replay defence)', async () => {
+    let calls = 0;
+    const app = await buildFf(() => {
+      calls += 1;
+    });
+    const body = JSON.stringify({ meetingId: 'm-replay', eventType: 'Transcription completed' });
+    expect((await ffPost(app, body, ffSig(body))).statusCode).toBe(202);
+    const replay = await ffPost(app, body, ffSig(body));
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toEqual({ status: 'duplicate' });
     expect(calls).toBe(1);
   });
 });

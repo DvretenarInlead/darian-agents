@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Pool } from 'pg';
-import { askAssistant, QUESTION_MAX } from './assistant.js';
+import { askAssistant, normalizeHistory, QUESTION_MAX, type AssistantTurn } from './assistant.js';
 import { StubLlmClient, type LlmRequest } from '../../integrations/anthropic/client.js';
 import type { AgentName } from '../../core/agents/contract.js';
 
@@ -90,6 +90,26 @@ describe('askAssistant', () => {
     expect(question.length).toBeLessThanOrEqual(QUESTION_MAX);
   });
 
+  it('prepends conversation history and applies the model override', async () => {
+    const calls: LlmRequest[] = [];
+    const llm = new StubLlmClient((req) => {
+      calls.push(req);
+      return 'The urgent one is from meeting m1.';
+    });
+    const history: AssistantTurn[] = [
+      { role: 'user', content: 'What did I commit to?' },
+      { role: 'assistant', content: 'One new task from meeting m1.' },
+    ];
+
+    await askAssistant({ pool: stubPool(LEDGER), llm, model: 'claude-haiku-4-5-20251001' }, 'Which one is urgent?', history);
+
+    expect(calls[0]!.model).toBe('claude-haiku-4-5-20251001');
+    expect(calls[0]!.messages).toHaveLength(3);
+    expect(calls[0]!.messages[0]).toEqual({ role: 'user', content: 'What did I commit to?' });
+    expect(calls[0]!.messages[1]!.role).toBe('assistant');
+    expect(calls[0]!.messages[2]!.content).toContain('Which one is urgent?');
+  });
+
   it('answers a blank/unheard question without touching the LLM or DB', async () => {
     const llm = new StubLlmClient(() => {
       throw new Error('should not be called');
@@ -97,5 +117,54 @@ describe('askAssistant', () => {
     const result = await askAssistant({ pool: stubPool(LEDGER), llm }, '   ');
     expect(result.answer).toMatch(/say that again/);
     expect(result.contextRows).toBe(0);
+  });
+});
+
+describe('normalizeHistory', () => {
+  it('keeps a clean alternating sequence ending on assistant', () => {
+    const out = normalizeHistory([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: 'a2' },
+    ]);
+    expect(out.map((t) => t.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+  });
+
+  it('drops malformed turns and enforces user-first alternation', () => {
+    const out = normalizeHistory([
+      { role: 'assistant', content: 'orphan answer' }, // cannot start with assistant
+      { role: 'user', content: 'q1' },
+      { role: 'user', content: 'double user' }, // breaks alternation
+      { role: 'assistant', content: 'a1' },
+    ]);
+    expect(out).toEqual([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+    ]);
+  });
+
+  it('trims a trailing user turn (the fresh question comes separately)', () => {
+    const out = normalizeHistory([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'dangling' },
+    ]);
+    expect(out.map((t) => t.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('sanitizes control chars and drops empty turns', () => {
+    const out = normalizeHistory([
+      { role: 'user', content: 'he\x00llo' },
+      { role: 'assistant', content: '   ' },
+    ]);
+    // 'hello' survives sanitized; the empty assistant turn dies, and the now
+    // trailing user turn is trimmed.
+    expect(out).toEqual([]);
+  });
+
+  it('handles undefined and empty input', () => {
+    expect(normalizeHistory(undefined)).toEqual([]);
+    expect(normalizeHistory([])).toEqual([]);
   });
 });

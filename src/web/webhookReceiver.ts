@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { Pool } from 'pg';
-import { verifyWebhook } from '../core/triggers/webhookVerify.js';
+import { verifyWebhook, verifyFirefliesWebhook } from '../core/triggers/webhookVerify.js';
 import { recordDelivery } from '../core/triggers/dedupe.js';
 import { InMemoryRateLimiter, type RateLimiter } from '../core/triggers/rateLimiter.js';
 
@@ -21,6 +22,14 @@ export interface WebhookReceiverOptions {
   pool: Pool;
   secret: string;
   toleranceSec: number;
+  /**
+   * Signature scheme. 'generic' (default) is the Stripe-style
+   * timestamp-bound scheme with our custom headers. 'fireflies' matches what
+   * Fireflies actually sends: `x-hub-signature: sha256=<hex HMAC(body)>`, no
+   * timestamp and no delivery id — replay defence falls to the body-hash
+   * dedupe, and the meeting id is read from the JSON body.
+   */
+  mode?: 'generic' | 'fireflies';
   /** Max JSON body size in bytes. */
   bodyLimitBytes?: number;
   rateLimit?: { windowMs: number; max: number };
@@ -75,6 +84,31 @@ export function createWebhookReceiver(opts: WebhookReceiverOptions): FastifyPlug
       }
 
       const rawBody = (req as { rawBody?: string }).rawBody ?? '';
+
+      if (opts.mode === 'fireflies') {
+        const signature = String(req.headers['x-hub-signature'] ?? '');
+        if (!signature) return reply.code(400).send({ error: 'missing_headers' });
+
+        const signatureOk = verifyFirefliesWebhook({ rawBody, signatureHeader: signature, secret: opts.secret });
+        // No timestamp in the scheme; replay defence is the body-hash dedupe.
+        const deliveryId = `ff-${createHash('sha256').update(rawBody).digest('hex').slice(0, 32)}`;
+        const body = (req.body ?? {}) as { meetingId?: string };
+        const meetingId = typeof body.meetingId === 'string' ? body.meetingId : null;
+
+        const { firstDelivery } = await recordDelivery(opts.pool, {
+          deliveryId,
+          meetingId,
+          signatureOk,
+          tsInWindow: true,
+        });
+
+        if (!signatureOk) return reply.code(401).send({ error: 'invalid_signature' });
+        if (!firstDelivery) return reply.code(200).send({ status: 'duplicate' });
+
+        await opts.onVerified({ source, deliveryId, body: req.body });
+        return reply.code(202).send({ status: 'accepted' });
+      }
+
       const signature = String(req.headers[headers.signature] ?? '');
       const timestamp = Number(req.headers[headers.timestamp]);
       const deliveryId = String(req.headers[headers.deliveryId] ?? '');

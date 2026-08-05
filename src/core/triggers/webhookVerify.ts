@@ -63,3 +63,23 @@ export function verifyWebhook(input: WebhookVerifyInput): WebhookVerifyResult {
     : false;
   return { signatureOk, tsInWindow, ok: signatureOk && tsInWindow };
 }
+
+/**
+ * Fireflies scheme: `x-hub-signature: sha256=<hex HMAC-SHA256(secret, rawBody)>`.
+ * No timestamp is signed or sent, so there is no window check — replay defence
+ * comes from the delivery dedupe (body-hash id) in the receiver.
+ */
+export function computeFirefliesSignature(secret: string, rawBody: string): string {
+  return createHmac('sha256', secret).update(rawBody).digest('hex');
+}
+
+export function verifyFirefliesWebhook(input: {
+  rawBody: string;
+  /** Full header value, e.g. "sha256=ab12…". */
+  signatureHeader: string;
+  secret: string;
+}): boolean {
+  const header = input.signatureHeader.trim();
+  const hex = header.toLowerCase().startsWith('sha256=') ? header.slice('sha256='.length) : header;
+  return constantTimeEqualHex(computeFirefliesSignature(input.secret, input.rawBody), hex);
+}

@@ -35,9 +35,13 @@ const envSchema = z.object({
 
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_DEFAULT_MODEL: z.string().default('claude-opus-4-8'),
+  /** Fast model for the voice assistant — spoken answers need latency, not deep reasoning. */
+  ASSISTANT_MODEL: z.string().default('claude-haiku-4-5-20251001'),
 
   FIREFLIES_API_KEY: z.string().optional(),
   FIREFLIES_WEBHOOK_SECRET: z.string().optional(),
+  /** Poll interval for pull-based ingestion (minutes). 0 disables the poller. */
+  FIREFLIES_POLL_MINUTES: z.coerce.number().int().min(0).default(10),
   WEBHOOK_TIMESTAMP_TOLERANCE_SEC: z.coerce.number().int().positive().default(300),
 
   HUBSPOT_ACCESS_TOKEN: z.string().optional(),
@@ -48,6 +52,9 @@ const envSchema = z.object({
 
   /** Shared secret for the personal-assistant HUD; the route registers only when set. */
   ASSISTANT_ACCESS_TOKEN: z.string().min(16).optional(),
+
+  /** Shared secret for the platform MCP server (/mcp); the route registers only when set. */
+  MCP_ACCESS_TOKEN: z.string().min(16).optional(),
 
   /** ElevenLabs (assistant voice: TTS + STT). Unset → HUD falls back to browser voice. */
   ELEVENLABS_API_KEY: z.string().optional(),
@@ -77,11 +84,12 @@ export interface Config {
   logLevel: RawEnv['LOG_LEVEL'];
   db: { url: string; ssl: boolean; poolMax: number; caCert: string | undefined };
   envelope: { masterKey: string | undefined; keyVersion: number };
-  anthropic: { apiKey: string | undefined; defaultModel: string };
-  fireflies: { apiKey: string | undefined; webhookSecret: string | undefined; timestampToleranceSec: number };
+  anthropic: { apiKey: string | undefined; defaultModel: string; assistantModel: string };
+  fireflies: { apiKey: string | undefined; webhookSecret: string | undefined; timestampToleranceSec: number; pollMinutes: number };
   hubspot: { accessToken: string | undefined; serviceKey: string | undefined; projectsApiVersion: string };
   github: { token: string | undefined };
   assistant: { accessToken: string | undefined; allowedIps: string[] };
+  mcp: { accessToken: string | undefined };
   elevenlabs: { apiKey: string | undefined; voiceId: string };
   trustProxy: boolean;
   session: { accessTtlSec: number; idleTtlSec: number; absoluteTtlSec: number; sudoWindowSec: number };
@@ -96,11 +104,12 @@ function build(raw: RawEnv): Config {
     logLevel: raw.LOG_LEVEL,
     db: { url: raw.DATABASE_URL, ssl: raw.DATABASE_SSL, poolMax: raw.DATABASE_POOL_MAX, caCert: raw.DATABASE_CA_CERT },
     envelope: { masterKey: raw.ENVELOPE_MASTER_KEY, keyVersion: raw.ENVELOPE_KEY_VERSION },
-    anthropic: { apiKey: raw.ANTHROPIC_API_KEY, defaultModel: raw.ANTHROPIC_DEFAULT_MODEL },
+    anthropic: { apiKey: raw.ANTHROPIC_API_KEY, defaultModel: raw.ANTHROPIC_DEFAULT_MODEL, assistantModel: raw.ASSISTANT_MODEL },
     fireflies: {
       apiKey: raw.FIREFLIES_API_KEY,
       webhookSecret: raw.FIREFLIES_WEBHOOK_SECRET,
       timestampToleranceSec: raw.WEBHOOK_TIMESTAMP_TOLERANCE_SEC,
+      pollMinutes: raw.FIREFLIES_POLL_MINUTES,
     },
     hubspot: {
       accessToken: raw.HUBSPOT_ACCESS_TOKEN,
@@ -109,6 +118,7 @@ function build(raw: RawEnv): Config {
     },
     github: { token: raw.GITHUB_TOKEN },
     assistant: { accessToken: raw.ASSISTANT_ACCESS_TOKEN, allowedIps: csv(raw.ASSISTANT_ALLOWED_IPS) },
+    mcp: { accessToken: raw.MCP_ACCESS_TOKEN },
     elevenlabs: { apiKey: raw.ELEVENLABS_API_KEY, voiceId: raw.ELEVENLABS_VOICE_ID },
     trustProxy: raw.TRUST_PROXY,
     session: {
