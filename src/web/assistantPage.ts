@@ -34,6 +34,10 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
   select {
     background: #101a30; color: inherit; border: 1px solid #24365c; border-radius: .5rem; padding: .3rem .5rem;
   }
+  #wakePhrase {
+    background: #101a30; color: inherit; border: 1px solid #24365c; border-radius: .5rem;
+    padding: .2rem .4rem; width: 6.5rem;
+  }
   #log { flex: 1; overflow-y: auto; padding: 1.25rem; display: flex; flex-direction: column; gap: .75rem; }
   .msg { max-width: 46rem; padding: .65rem .9rem; border-radius: .9rem; white-space: pre-wrap; }
   .me { align-self: flex-end; background: #22345c; border-bottom-right-radius: .25rem; }
@@ -67,6 +71,9 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     </select>
   </label>
   <label class="sys"><input type="checkbox" id="speak" checked> speak replies</label>
+  <label class="sys" id="wakeWrap"><input type="checkbox" id="wake"> wake word
+    <input type="text" id="wakePhrase" value="hi helper" size="9" title="Say this phrase to summon the assistant">
+  </label>
   <button id="resetToken" title="Change access token">token</button>
 </header>
 
@@ -119,6 +126,9 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     const voice = speechSynthesis.getVoices().find(v => v.lang === langSel.value)
       || speechSynthesis.getVoices().find(v => v.lang.startsWith(langSel.value.slice(0, 2)));
     if (voice) u.voice = voice;
+    // Pause the ears while the mouth is talking, or it hears itself.
+    pauseListening();
+    u.onend = u.onerror = () => resumeListening();
     speechSynthesis.speak(u);
   }
 
@@ -159,13 +169,27 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
 
   // ---- Ears: Web Speech API (Chromium). Falls back to typing elsewhere. ----
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const wakeBox = document.getElementById('wake');
+  const wakeInput = document.getElementById('wakePhrase');
+
+  // No-ops overridden below when SR is available; speak() calls them either way.
+  let pauseListening = () => {};
+  let resumeListening = () => {};
+
   if (!SR) {
     micBtn.classList.add('hidden');
+    document.getElementById('wakeWrap').classList.add('hidden');
     add('sys', 'Speech recognition is not available in this browser — type your questions instead.');
   } else {
+    const savedWake = localStorage.getItem('assistant_wake_phrase');
+    if (savedWake) wakeInput.value = savedWake;
+    wakeInput.onchange = () => localStorage.setItem('assistant_wake_phrase', wakeInput.value);
+
+    // --- Push-to-talk (mic button): one utterance = one question. ---
     let rec = null;
     micBtn.onclick = () => {
       if (rec) { rec.stop(); return; }
+      stopWakeLoop(); // the two modes share the one microphone
       rec = new SR();
       rec.lang = langSel.value;
       rec.interimResults = true;
@@ -176,12 +200,97 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
         if (e.results[e.results.length - 1].isFinal) ask(text);
       };
       rec.onerror = (e) => { if (e.error !== 'aborted') add('sys', 'Mic error: ' + e.error); };
-      rec.onend = () => { micBtn.classList.remove('listening'); dot.classList.remove('live'); rec = null; };
+      rec.onend = () => {
+        micBtn.classList.remove('listening'); dot.classList.remove('live'); rec = null;
+        if (wakeBox.checked) startWakeLoop();
+      };
       rec.start();
     };
+
+    // --- Wake word: always listening, summoned by the phrase (e.g. "hi helper"). ---
+    let wakeRec = null;
+    let wakeActive = false;   // user wants the loop running
+    let wakePaused = false;   // temporarily off while the assistant speaks
+    let awaitingQuestion = false;
+    let awaitTimer = null;
+
+    const normalize = (s) => s.toLowerCase().replace(/[^\\p{L}\\p{N} ]/gu, ' ').replace(/ +/g, ' ').trim();
+
+    function handleUtterance(raw) {
+      const text = raw.trim();
+      if (!text) return;
+      const phrase = normalize(wakeInput.value) || 'hi helper';
+      const heard = normalize(text);
+      const at = heard.indexOf(phrase);
+      if (at !== -1) {
+        // Whatever follows the wake phrase in the same breath is the question.
+        const after = heard.slice(at + phrase.length).trim();
+        if (after.length > 2) {
+          ask(after);
+        } else {
+          awaitingQuestion = true;
+          add('sys', 'Listening… ask your question.');
+          speak(langSel.value.startsWith('hr') ? 'Da?' : 'Yes?');
+          clearTimeout(awaitTimer);
+          awaitTimer = setTimeout(() => { awaitingQuestion = false; }, 12000);
+        }
+      } else if (awaitingQuestion) {
+        awaitingQuestion = false;
+        clearTimeout(awaitTimer);
+        ask(text);
+      }
+      // Anything else is ambient speech — ignore it.
+    }
+
+    function startWakeLoop() {
+      if (wakeRec || rec || !wakeBox.checked) return;
+      wakeActive = true;
+      wakeRec = new SR();
+      wakeRec.lang = langSel.value;
+      wakeRec.continuous = true;
+      wakeRec.interimResults = false;
+      wakeRec.onstart = () => dot.classList.add('live');
+      wakeRec.onresult = (e) => {
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) handleUtterance(e.results[i][0].transcript);
+        }
+      };
+      wakeRec.onerror = (e) => {
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          wakeBox.checked = false; wakeActive = false;
+          add('sys', 'Mic error: ' + e.error);
+        }
+      };
+      wakeRec.onend = () => {
+        wakeRec = null;
+        dot.classList.remove('live');
+        // Chrome ends recognition periodically — restart to stay always-on.
+        if (wakeActive && !wakePaused && wakeBox.checked) setTimeout(startWakeLoop, 250);
+      };
+      wakeRec.start();
+    }
+
+    function stopWakeLoop() {
+      wakeActive = false;
+      if (wakeRec) { const r = wakeRec; wakeRec = null; r.stop(); }
+      dot.classList.remove('live');
+    }
+
+    pauseListening = () => { if (wakeActive) { wakePaused = true; if (wakeRec) { const r = wakeRec; wakeRec = null; r.stop(); } } };
+    resumeListening = () => { if (wakePaused) { wakePaused = false; if (wakeBox.checked) startWakeLoop(); } };
+
+    wakeBox.onchange = () => {
+      if (wakeBox.checked) {
+        startWakeLoop();
+        add('sys', 'Wake word on — say “' + wakeInput.value + '” to summon me.');
+      } else {
+        stopWakeLoop();
+      }
+    };
+    langSel.addEventListener('change', () => { if (wakeActive) { stopWakeLoop(); wakeBox.checked && startWakeLoop(); } });
   }
 
-  add('sys', 'Click the mic and ask, e.g. “What did I commit to this week?” / “Što mi je danas prioritet?”');
+  add('sys', 'Click the mic and ask, or enable “wake word” and just say “hi helper — what did I commit to this week?” / “Što mi je danas prioritet?”');
 })();
 </script>
 </body>

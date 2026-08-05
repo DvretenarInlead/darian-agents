@@ -31,6 +31,8 @@ services:
       # Least-privilege app_rw connection string (NOT the admin/doadmin URL).
       - { key: DATABASE_URL, scope: RUN_TIME, type: SECRET }
       - { key: DATABASE_SSL, value: "true" }
+      # Cluster CA (PEM or base64 PEM) for full TLS verification; from the DB Overview page.
+      - { key: DATABASE_CA_CERT, scope: RUN_TIME, type: SECRET }
       - { key: DATABASE_POOL_MAX, value: "10" }
       - { key: ENVELOPE_MASTER_KEY, scope: RUN_TIME, type: SECRET }
       - { key: ENVELOPE_KEY_VERSION, value: "1" }

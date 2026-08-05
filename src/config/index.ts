@@ -27,6 +27,8 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   DATABASE_SSL: boolish.default('false'),
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
+  /** Managed-Postgres CA certificate (PEM, or base64 of the PEM). Enables full TLS verification. */
+  DATABASE_CA_CERT: z.string().optional(),
 
   ENVELOPE_MASTER_KEY: z.string().optional(),
   ENVELOPE_KEY_VERSION: z.coerce.number().int().positive().default(1),
@@ -69,7 +71,7 @@ export interface Config {
   env: RawEnv['NODE_ENV'];
   port: number;
   logLevel: RawEnv['LOG_LEVEL'];
-  db: { url: string; ssl: boolean; poolMax: number };
+  db: { url: string; ssl: boolean; poolMax: number; caCert: string | undefined };
   envelope: { masterKey: string | undefined; keyVersion: number };
   anthropic: { apiKey: string | undefined; defaultModel: string };
   fireflies: { apiKey: string | undefined; webhookSecret: string | undefined; timestampToleranceSec: number };
@@ -87,7 +89,7 @@ function build(raw: RawEnv): Config {
     env: raw.NODE_ENV,
     port: raw.PORT,
     logLevel: raw.LOG_LEVEL,
-    db: { url: raw.DATABASE_URL, ssl: raw.DATABASE_SSL, poolMax: raw.DATABASE_POOL_MAX },
+    db: { url: raw.DATABASE_URL, ssl: raw.DATABASE_SSL, poolMax: raw.DATABASE_POOL_MAX, caCert: raw.DATABASE_CA_CERT },
     envelope: { masterKey: raw.ENVELOPE_MASTER_KEY, keyVersion: raw.ENVELOPE_KEY_VERSION },
     anthropic: { apiKey: raw.ANTHROPIC_API_KEY, defaultModel: raw.ANTHROPIC_DEFAULT_MODEL },
     fireflies: {
