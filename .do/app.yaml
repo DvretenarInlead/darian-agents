@@ -50,6 +50,8 @@ services:
       - { key: TRUST_PROXY, value: "true" }
       # ElevenLabs voice (assistant ears + mouth); optional — browser fallback without it.
       - { key: ELEVENLABS_API_KEY, scope: RUN_TIME, type: SECRET }
+      # Platform MCP server (/mcp) shared secret; optional — route not mounted without it.
+      - { key: MCP_ACCESS_TOKEN, scope: RUN_TIME, type: SECRET }
       - { key: EGRESS_ALLOWLIST, value: "api.anthropic.com,api.fireflies.ai,api.hubapi.com,api.github.com,api.elevenlabs.io" }
       - { key: AUDIT_SHIP_ENDPOINT, scope: RUN_TIME, type: SECRET }
       - { key: AUDIT_SHIP_TOKEN, scope: RUN_TIME, type: SECRET }

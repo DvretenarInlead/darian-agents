@@ -4,8 +4,8 @@ import { AgentCliHubSpotClient } from './agentCli.js';
 import { InMemoryHubSpotClient } from './client.js';
 
 export * from './types.js';
-export { renderPreview, InMemoryHubSpotClient } from './client.js';
-export type { HubSpotClient } from './client.js';
+export { renderPreview, InMemoryHubSpotClient, InMemoryTaskOps } from './client.js';
+export type { HubSpotClient, HubSpotTaskOps } from './client.js';
 export { ProjectsApiHubSpotClient } from './projectsApi.js';
 export { AgentCliHubSpotClient } from './agentCli.js';
 export { buildSyncPlan } from './plan.js';

@@ -1,7 +1,7 @@
 import { config } from '../../config/index.js';
 import { assertEgressAllowed, getScopedSecret, EGRESS_HOSTS } from '../../core/governance/credentials.js';
 import { resilientFetch } from '../../core/net/resilientFetch.js';
-import { renderPreview, type HubSpotClient } from './client.js';
+import { renderPreview, type HubSpotClient, type HubSpotTaskOps } from './client.js';
 import type {
   OwnerQuery,
   OwnerRef,
@@ -12,6 +12,7 @@ import type {
   SyncResult,
   SyncedRef,
   TaskInput,
+  TaskSummary,
 } from './types.js';
 
 /**
@@ -50,7 +51,7 @@ function taskToProperties(t: TaskInput): Record<string, string> {
   return props;
 }
 
-export class ProjectsApiHubSpotClient implements HubSpotClient {
+export class ProjectsApiHubSpotClient implements HubSpotClient, HubSpotTaskOps {
   private get projectsPath(): string {
     return `/crm/objects/${config().hubspot.projectsApiVersion}/projects`;
   }
@@ -96,6 +97,42 @@ export class ProjectsApiHubSpotClient implements HubSpotClient {
       refs.push(await this.applyOp(op, token));
     }
     return { subjectId: plan.subjectId, refs };
+  }
+
+  // ---- Owner-facing task ops (assistant/MCP surface) ----
+  // Human-initiated: callers enforce the kill-switch and audit; egress and
+  // credentials remain scoped to hubspot_admin like every other HubSpot call.
+
+  async listTasks(limit: number): Promise<TaskSummary[]> {
+    const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
+    const props = 'hs_task_subject,hs_task_status,hs_timestamp,hs_task_body';
+    const data = await this.http<{
+      results?: Array<{ id: string; properties?: Record<string, string | null> }>;
+    }>('GET', `/crm/v3/objects/tasks?limit=${Math.min(limit, 100)}&properties=${props}`, token);
+    return (data.results ?? []).map((r) => ({
+      id: r.id,
+      title: r.properties?.hs_task_subject ?? '(untitled)',
+      status: r.properties?.hs_task_status ?? null,
+      dueDate: r.properties?.hs_timestamp ?? null,
+      body: r.properties?.hs_task_body ?? null,
+    }));
+  }
+
+  async createTask(task: TaskInput): Promise<{ id: string }> {
+    const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
+    const created = await this.http<{ id: string }>('POST', '/crm/v3/objects/tasks', token, {
+      properties: taskToProperties(task),
+    });
+    return { id: created.id };
+  }
+
+  async commentOnTask(taskId: string, comment: string, nowIso: string): Promise<{ id: string }> {
+    const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
+    const note = await this.http<{ id: string }>('POST', '/crm/v3/objects/notes', token, {
+      properties: { hs_note_body: comment, hs_timestamp: nowIso },
+    });
+    await this.http('PUT', `/crm/v4/objects/notes/${note.id}/associations/default/tasks/${taskId}`, token);
+    return { id: note.id };
   }
 
   private async applyOp(op: SyncOp, token: string): Promise<SyncedRef> {

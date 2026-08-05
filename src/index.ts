@@ -4,6 +4,8 @@ import { getPool, closePool } from './core/db/index.js';
 import { createWebhookReceiver } from './web/webhookReceiver.js';
 import { meetingIdFromPayload } from './products/meeting/handler.js';
 import { createAssistantRoutes } from './web/assistant.js';
+import { createMcpRoutes } from './web/mcp.js';
+import { ProjectsApiHubSpotClient } from './integrations/hubspot/projectsApi.js';
 import { AnthropicLlmClient } from './integrations/anthropic/client.js';
 import { ElevenLabsVoiceClient } from './integrations/elevenlabs/client.js';
 import { appendAudit } from './core/audit/writer.js';
@@ -122,6 +124,22 @@ export function buildServer() {
         // Provider voice (ears + mouth) only when the key is configured; the
         // HUD falls back to the browser's built-in voice otherwise.
         ...(cfg.elevenlabs.apiKey ? { voice: new ElevenLabsVoiceClient() } : {}),
+      }),
+    );
+  }
+
+  // Platform MCP server (/mcp): lets Claude clients (claude.ai connector,
+  // Claude Desktop) query the assistant/ledger and work with HubSpot tasks.
+  // Token-authenticated (NOT IP-allowlisted — MCP clients call from their own
+  // clouds); writes are kill-switch gated and everything is audited.
+  if (cfg.mcp.accessToken && cfg.anthropic.apiKey) {
+    void app.register(
+      createMcpRoutes({
+        pool: getPool(),
+        llm: new AnthropicLlmClient(),
+        model: cfg.anthropic.assistantModel,
+        accessToken: cfg.mcp.accessToken,
+        ...(cfg.hubspot.accessToken ? { taskOps: new ProjectsApiHubSpotClient() } : {}),
       }),
     );
   }

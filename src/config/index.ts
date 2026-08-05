@@ -53,6 +53,9 @@ const envSchema = z.object({
   /** Shared secret for the personal-assistant HUD; the route registers only when set. */
   ASSISTANT_ACCESS_TOKEN: z.string().min(16).optional(),
 
+  /** Shared secret for the platform MCP server (/mcp); the route registers only when set. */
+  MCP_ACCESS_TOKEN: z.string().min(16).optional(),
+
   /** ElevenLabs (assistant voice: TTS + STT). Unset → HUD falls back to browser voice. */
   ELEVENLABS_API_KEY: z.string().optional(),
   ELEVENLABS_VOICE_ID: z.string().default('21m00Tcm4TlvDq8ikWAM'),
@@ -86,6 +89,7 @@ export interface Config {
   hubspot: { accessToken: string | undefined; serviceKey: string | undefined; projectsApiVersion: string };
   github: { token: string | undefined };
   assistant: { accessToken: string | undefined; allowedIps: string[] };
+  mcp: { accessToken: string | undefined };
   elevenlabs: { apiKey: string | undefined; voiceId: string };
   trustProxy: boolean;
   session: { accessTtlSec: number; idleTtlSec: number; absoluteTtlSec: number; sudoWindowSec: number };
@@ -114,6 +118,7 @@ function build(raw: RawEnv): Config {
     },
     github: { token: raw.GITHUB_TOKEN },
     assistant: { accessToken: raw.ASSISTANT_ACCESS_TOKEN, allowedIps: csv(raw.ASSISTANT_ALLOWED_IPS) },
+    mcp: { accessToken: raw.MCP_ACCESS_TOKEN },
     elevenlabs: { apiKey: raw.ELEVENLABS_API_KEY, voiceId: raw.ELEVENLABS_VOICE_ID },
     trustProxy: raw.TRUST_PROXY,
     session: {

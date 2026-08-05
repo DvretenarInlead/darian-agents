@@ -35,6 +35,15 @@ export interface TaskInput {
   status?: string;
 }
 
+/** Read-side task row (assistant/MCP surface). */
+export interface TaskSummary {
+  id: string;
+  title: string;
+  status: string | null;
+  dueDate: string | null;
+  body: string | null;
+}
+
 /** A single planned mutation. Reconciliation decides create vs update. */
 export type SyncOp =
   | { kind: 'create_project'; project: ProjectInput; tasks: TaskInput[] }
