@@ -54,6 +54,7 @@ describe('assistant routes', () => {
     expect(res.headers['content-type']).toContain('text/html');
     expect(res.body).toContain('Personal Assistant');
     expect(res.body).toContain('/api/assistant/ask');
+    expect(res.body).toContain('hi helper');
   });
 
   it('answers an authorized question and audits the exchange', async () => {

@@ -7,12 +7,33 @@ import { config } from '../../config/index.js';
  */
 let pool: Pool | undefined;
 
+/**
+ * TLS config for managed Postgres (e.g. DO). Managed clusters present a cert
+ * signed by the provider's own CA, which Node does not trust by default —
+ * strict verification fails with SELF_SIGNED_CERT_IN_CHAIN. Precedence:
+ *
+ *  - CA cert provided (PEM, or base64-of-PEM to survive env-var storage):
+ *    full verification against that CA — the strong setting; download the CA
+ *    from the DO database cluster's Overview page.
+ *  - No CA cert: encrypted but unverified (rejectUnauthorized: false). On App
+ *    Platform traffic stays on DO's private network, but set DATABASE_CA_CERT
+ *    to close the MITM gap.
+ */
+export function sslConfig(ssl: boolean, caCert?: string): PoolConfig['ssl'] {
+  if (!ssl) return false;
+  if (!caCert) return { rejectUnauthorized: false };
+  const pem = caCert.includes('-----BEGIN')
+    ? caCert
+    : Buffer.from(caCert, 'base64').toString('utf8');
+  return { ca: pem, rejectUnauthorized: true };
+}
+
 export function getPool(): Pool {
   if (!pool) {
     const cfg = config();
     const poolConfig: PoolConfig = {
       connectionString: cfg.db.url,
-      ssl: cfg.db.ssl ? { rejectUnauthorized: true } : false,
+      ssl: sslConfig(cfg.db.ssl, cfg.db.caCert),
       // Per-instance cap. Across N web + M worker instances the total must stay
       // under the Postgres max_connections — front the DB with PgBouncer
       // (transaction mode) for horizontal scale. See docs/ARCHITECTURE.md.
