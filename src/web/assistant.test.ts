@@ -11,7 +11,9 @@ function stubPool(rows: Record<string, unknown>[] = []): Pool {
   return { query: async () => ({ rows }) } as unknown as Pool;
 }
 
-async function buildApp(overrides: { audited?: AuditEvent[]; max?: number } = {}): Promise<FastifyInstance> {
+async function buildApp(
+  overrides: { audited?: AuditEvent[]; max?: number; allowedIps?: string[] } = {},
+): Promise<FastifyInstance> {
   const app = Fastify();
   const audited = overrides.audited ?? [];
   await app.register(
@@ -19,6 +21,7 @@ async function buildApp(overrides: { audited?: AuditEvent[]; max?: number } = {}
       pool: stubPool(),
       llm: new StubLlmClient(() => 'Nothing urgent today.'),
       accessToken: TOKEN,
+      allowedIps: overrides.allowedIps ?? ['127.0.0.1'],
       rateLimit: { windowMs: 60_000, max: overrides.max ?? 20 },
       nowMs: () => 1_700_000_000_000,
       nowIso: () => '2026-08-05T12:00:00.000Z',
@@ -100,6 +103,71 @@ describe('assistant routes', () => {
     expect(res.json().refused).toBe(true);
     const payload = audited[0]!.payload as { flagged: string[] };
     expect(payload.flagged.length).toBeGreaterThan(0);
+  });
+
+  it('denies non-allowlisted IPs (403) on both the page and the API', async () => {
+    const audited: AuditEvent[] = [];
+    const app = await buildApp({ audited, allowedIps: ['203.0.113.7', '10.0.0.0/8'] });
+
+    const page = await app.inject({ method: 'GET', url: '/assistant', remoteAddress: '198.51.100.9' });
+    expect(page.statusCode).toBe(403);
+
+    const api = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/ask',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      payload: { question: 'hi' },
+      remoteAddress: '198.51.100.9',
+    });
+    expect(api.statusCode).toBe(403);
+    expect(audited).toHaveLength(0);
+  });
+
+  it('admits allowlisted IPs, including via CIDR and v4-mapped form', async () => {
+    const app = await buildApp({ allowedIps: ['203.0.113.7', '10.0.0.0/8'] });
+
+    const exact = await app.inject({ method: 'GET', url: '/assistant', remoteAddress: '203.0.113.7' });
+    expect(exact.statusCode).toBe(200);
+
+    const cidr = await app.inject({ method: 'GET', url: '/assistant', remoteAddress: '10.42.0.9' });
+    expect(cidr.statusCode).toBe(200);
+
+    const mapped = await app.inject({ method: 'GET', url: '/assistant', remoteAddress: '::ffff:203.0.113.7' });
+    expect(mapped.statusCode).toBe(200);
+  });
+
+  it('denies everything when the allowlist is empty (deny-by-default)', async () => {
+    const app = await buildApp({ allowedIps: [] });
+    const res = await app.inject({ method: 'GET', url: '/assistant' });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('leaves non-assistant routes outside the IP gate', async () => {
+    const app = Fastify();
+    app.get('/healthz', async () => ({ status: 'ok' }));
+    await app.register(
+      createAssistantRoutes({
+        pool: stubPool(),
+        llm: new StubLlmClient(() => 'x'),
+        accessToken: TOKEN,
+        allowedIps: [],
+      }),
+    );
+    await app.ready();
+
+    expect((await app.inject({ method: 'GET', url: '/healthz' })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/assistant' })).statusCode).toBe(403);
+  });
+
+  it('rejects a malformed allowlist when the routes are created, not at request time', () => {
+    expect(() =>
+      createAssistantRoutes({
+        pool: stubPool(),
+        llm: new StubLlmClient(() => 'x'),
+        accessToken: TOKEN,
+        allowedIps: ['not-an-ip'],
+      }),
+    ).toThrow(/invalid IP allowlist entry/);
   });
 
   it('rate-limits by IP (429) before touching auth or the LLM', async () => {
