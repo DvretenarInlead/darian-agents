@@ -6,6 +6,7 @@
  * transaction; a failure rolls back that file and aborts the run.
  */
 import { readdir, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Client } from 'pg';
@@ -13,7 +14,17 @@ import { config } from '../src/config/index.js';
 import { sslConfig, stripSslParams } from '../src/core/db/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(__dirname, '..', 'migrations');
+
+// The .sql files are not compiled, so their location depends on how we run:
+// from source (scripts/ → ../migrations) or compiled (dist/scripts/ →
+// ../../migrations). Probe both instead of assuming.
+function findMigrationsDir(): string {
+  const candidates = [join(__dirname, '..', 'migrations'), join(__dirname, '..', '..', 'migrations')];
+  const found = candidates.find(existsSync);
+  if (!found) throw new Error(`migrations directory not found; looked in: ${candidates.join(', ')}`);
+  return found;
+}
+const MIGRATIONS_DIR = findMigrationsDir();
 
 async function main(): Promise<void> {
   const cfg = config();
