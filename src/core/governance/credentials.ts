@@ -50,11 +50,11 @@ const AGENT_SCOPES: Record<AgentName, AgentScope> = {
   // Security + Dev read GitHub repos for Product B scoring.
   security: { secrets: ['anthropic', 'github'], egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.github] },
   dev: { secrets: ['anthropic', 'github'], egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.github] },
-  // Personal assistant answers from our own provenance store; LLM plus the
-  // voice provider (TTS/STT) — still no data-source or write credentials.
+  // Personal assistant: LLM, the voice provider (TTS/STT), and read-only
+  // Fireflies access for its meeting-lookup tools — still no write credentials.
   assistant: {
-    secrets: ['anthropic', 'elevenlabs'],
-    egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.elevenlabs],
+    secrets: ['anthropic', 'elevenlabs', 'fireflies'],
+    egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.elevenlabs, EGRESS_HOSTS.fireflies],
   },
 };
 

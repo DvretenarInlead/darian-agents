@@ -6,6 +6,7 @@ import { meetingIdFromPayload } from './products/meeting/handler.js';
 import { createAssistantRoutes } from './web/assistant.js';
 import { createMcpRoutes } from './web/mcp.js';
 import { ProjectsApiHubSpotClient } from './integrations/hubspot/projectsApi.js';
+import { GraphqlFirefliesClient } from './integrations/fireflies/client.js';
 import { AnthropicLlmClient } from './integrations/anthropic/client.js';
 import { ElevenLabsVoiceClient } from './integrations/elevenlabs/client.js';
 import { appendAudit } from './core/audit/writer.js';
@@ -127,6 +128,8 @@ export function buildServer() {
         // Provider voice (ears + mouth) only when the key is configured; the
         // HUD falls back to the browser's built-in voice otherwise.
         ...(cfg.elevenlabs.apiKey ? { voice: new ElevenLabsVoiceClient() } : {}),
+        // Meeting-lookup tools (read-only, scoped to the assistant agent).
+        ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
       }),
     );
   }
@@ -143,6 +146,7 @@ export function buildServer() {
         model: cfg.anthropic.assistantModel,
         accessToken: cfg.mcp.accessToken,
         ...(cfg.hubspot.accessToken ? { taskOps: new ProjectsApiHubSpotClient() } : {}),
+        ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
       }),
     );
   }

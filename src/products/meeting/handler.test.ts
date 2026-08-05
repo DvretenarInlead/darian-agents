@@ -20,7 +20,7 @@ const items = [{ title: 'Send proposal', description: null, owner_hint: null, du
 /** Stub LLM: extraction returns items; board returns a pass verdict per subject. */
 function responder(req: LlmRequest, agent: string): string {
   if (req.system?.includes('extract concrete action items')) return JSON.stringify(items);
-  const m = req.messages[0]?.content.match(/Subjects:\n(\[[\s\S]*\])/);
+  const m = (req.messages[0]?.content as string).match(/Subjects:\n(\[[\s\S]*\])/);
   const subjects = m ? (JSON.parse(m[1]!) as Array<{ subjectId: string }>) : [];
   return JSON.stringify(
     subjects.map((s) => ({ agent, subject_id: s.subjectId, domain: agent === 'security' ? 'security' : 'general', disposition: 'pass', confidence: 0.9, issues: [], proposed_fix: null, context: null })),
