@@ -11,6 +11,7 @@ import {
   QUESTION_MAX,
   HISTORY_MAX_TURNS,
   HISTORY_TEXT_MAX,
+  type AssistantDeps,
   type AssistantTurn,
 } from '../products/meeting/assistant.js';
 import { FREE_TEXT_MAX } from '../core/agents/contract.js';
@@ -45,6 +46,8 @@ export interface AssistantRoutesOptions {
   model?: string;
   /** Voice provider (TTS+STT). Omit → HUD falls back to browser voice. */
   voice?: VoiceClient;
+  /** Read-only Fireflies lookup tools for the assistant; omit → ledger-only. */
+  fireflies?: AssistantDeps['fireflies'];
   /** Shared secret the HUD presents as `Authorization: Bearer <token>`. */
   accessToken: string;
   /** IPs/CIDRs allowed to reach the assistant at all. Empty = deny everyone. */
@@ -150,7 +153,12 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
 
         const { question, history } = req.body as { question: string; history?: AssistantTurn[] };
         const result = await askAssistant(
-          { pool: opts.pool, llm: opts.llm, ...(opts.model ? { model: opts.model } : {}) },
+          {
+            pool: opts.pool,
+            llm: opts.llm,
+            ...(opts.model ? { model: opts.model } : {}),
+            ...(opts.fireflies ? { fireflies: opts.fireflies } : {}),
+          },
           question,
           history,
         );
@@ -166,6 +174,7 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
               question,
               flagged: result.flagged,
               contextRows: result.contextRows,
+              toolCalls: result.toolCalls,
               answer: result.answer,
             },
           },

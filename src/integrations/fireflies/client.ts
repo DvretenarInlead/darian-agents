@@ -62,9 +62,12 @@ export function transcriptsToList(resp: ListResponse): TranscriptMeta[] {
 }
 
 export class GraphqlFirefliesClient implements FirefliesClient {
+  /** Calls are scoped to the given agent (extraction path vs assistant tools). */
+  constructor(private readonly agent: 'data_quality' | 'assistant' = 'data_quality') {}
+
   private async gql(query: string, variables: Record<string, unknown>): Promise<unknown> {
-    assertEgressAllowed('data_quality', HOST);
-    const apiKey = getScopedSecret('data_quality', 'fireflies');
+    assertEgressAllowed(this.agent, HOST);
+    const apiKey = getScopedSecret(this.agent, 'fireflies');
     const res = await resilientFetch(ENDPOINT, {
       method: 'POST',
       headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },

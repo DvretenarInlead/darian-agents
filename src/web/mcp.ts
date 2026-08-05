@@ -7,7 +7,7 @@ import { isEngaged } from '../console/killswitch.js';
 import { sanitize } from '../core/agents/sanitize.js';
 import type { LlmClient } from '../integrations/anthropic/client.js';
 import type { HubSpotTaskOps } from '../integrations/hubspot/client.js';
-import { askAssistant, QUESTION_MAX } from '../products/meeting/assistant.js';
+import { askAssistant, QUESTION_MAX, type AssistantDeps } from '../products/meeting/assistant.js';
 import { listCommitments } from '../products/meeting/query.js';
 
 /**
@@ -101,6 +101,8 @@ export interface McpRoutesOptions {
   model?: string;
   /** HubSpot task operations; task tools report unconfigured without it. */
   taskOps?: HubSpotTaskOps;
+  /** Read-only Fireflies lookup tools for ask_assistant; omit → ledger-only. */
+  fireflies?: AssistantDeps['fireflies'];
   /** Shared secret MCP clients present as `Authorization: Bearer <token>`. */
   accessToken: string;
   rateLimit?: { windowMs: number; max: number };
@@ -125,10 +127,15 @@ export function createMcpRoutes(opts: McpRoutesOptions): FastifyPluginAsync {
       case 'ask_assistant': {
         const question = sanitize(String(args.question ?? ''), { maxLength: QUESTION_MAX });
         const result = await askAssistant(
-          { pool: opts.pool, llm: opts.llm, ...(opts.model ? { model: opts.model } : {}) },
+          {
+            pool: opts.pool,
+            llm: opts.llm,
+            ...(opts.model ? { model: opts.model } : {}),
+            ...(opts.fireflies ? { fireflies: opts.fireflies } : {}),
+          },
           question,
         );
-        return { answer: result.answer, refused: result.flagged.length > 0 };
+        return { answer: result.answer, refused: result.flagged.length > 0, toolCalls: result.toolCalls };
       }
       case 'list_commitments': {
         const limit = Math.min(Math.max(Number(args.limit ?? 25), 1), 100);

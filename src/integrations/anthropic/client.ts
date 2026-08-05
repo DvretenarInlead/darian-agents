@@ -12,9 +12,21 @@ import type { AgentName } from '../../core/agents/contract.js';
  * Anthropic with its own scoped credential. Consumers (extraction, board) depend
  * on the `LlmClient` interface, never the concrete adapter, so tests use a stub.
  */
+/** Content blocks (Messages API shapes) — used by the tool-use loop. */
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+
 export interface LlmMessage {
   role: 'user' | 'assistant';
-  content: string;
+  content: string | ContentBlock[];
+}
+
+export interface ToolSpec {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
 }
 
 export interface LlmRequest {
@@ -22,6 +34,12 @@ export interface LlmRequest {
   messages: LlmMessage[];
   model?: string;
   maxTokens?: number;
+  tools?: ToolSpec[];
+}
+
+export interface LlmTurn {
+  stopReason: string | null;
+  content: ContentBlock[];
 }
 
 export interface LlmClient {
@@ -29,11 +47,21 @@ export interface LlmClient {
   complete(req: LlmRequest, agent: AgentName): Promise<string>;
 }
 
+/** Extended port for agentic (tool-use) consumers; returns the raw turn. */
+export interface ToolLlmClient extends LlmClient {
+  completeTurn(req: LlmRequest, agent: AgentName): Promise<LlmTurn>;
+}
+
+/** Runtime check: does this LlmClient support the tool-use loop? */
+export function supportsTools(llm: LlmClient): llm is ToolLlmClient {
+  return typeof (llm as Partial<ToolLlmClient>).completeTurn === 'function';
+}
+
 const HOST = EGRESS_HOSTS.anthropic; // api.anthropic.com
 const ANTHROPIC_VERSION = '2023-06-01';
 
-export class AnthropicLlmClient implements LlmClient {
-  async complete(req: LlmRequest, agent: AgentName): Promise<string> {
+export class AnthropicLlmClient implements ToolLlmClient {
+  async completeTurn(req: LlmRequest, agent: AgentName): Promise<LlmTurn> {
     assertEgressAllowed(agent, HOST);
     const apiKey = getScopedSecret(agent, 'anthropic');
     const model = req.model ?? config().anthropic.defaultModel;
@@ -49,16 +77,22 @@ export class AnthropicLlmClient implements LlmClient {
         model,
         max_tokens: req.maxTokens ?? 2048,
         ...(req.system ? { system: req.system } : {}),
+        ...(req.tools?.length ? { tools: req.tools } : {}),
         messages: req.messages,
       }),
     });
     if (!res.ok) {
       throw new Error(`Anthropic request failed: ${res.status} ${res.statusText}`);
     }
-    const data = (await res.json()) as { content?: { type: string; text?: string }[] };
-    return (data.content ?? [])
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text ?? '')
+    const data = (await res.json()) as { stop_reason?: string | null; content?: ContentBlock[] };
+    return { stopReason: data.stop_reason ?? null, content: data.content ?? [] };
+  }
+
+  async complete(req: LlmRequest, agent: AgentName): Promise<string> {
+    const turn = await this.completeTurn(req, agent);
+    return turn.content
+      .filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text')
+      .map((b) => b.text)
       .join('');
   }
 }
