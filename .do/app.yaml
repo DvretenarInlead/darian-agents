@@ -41,6 +41,11 @@ services:
       - { key: HUBSPOT_SERVICE_KEY, scope: RUN_TIME, type: SECRET }
       - { key: HUBSPOT_PROJECTS_API_VERSION, value: "2026-03" }
       - { key: GITHUB_TOKEN, scope: RUN_TIME, type: SECRET }
+      # Personal-assistant HUD (/assistant): shared bearer secret + IP allowlist.
+      - { key: ASSISTANT_ACCESS_TOKEN, scope: RUN_TIME, type: SECRET }
+      - { key: ASSISTANT_ALLOWED_IPS, scope: RUN_TIME, type: SECRET }
+      # Behind DO's load balancer the real client IP arrives via X-Forwarded-For.
+      - { key: TRUST_PROXY, value: "true" }
       - { key: EGRESS_ALLOWLIST, value: "api.anthropic.com,api.fireflies.ai,api.hubapi.com,api.github.com" }
       - { key: AUDIT_SHIP_ENDPOINT, scope: RUN_TIME, type: SECRET }
       - { key: AUDIT_SHIP_TOKEN, scope: RUN_TIME, type: SECRET }
