@@ -39,5 +39,12 @@
     "tsx": "^4.16.0",
     "typescript": "^5.5.0",
     "vitest": "^4.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-uri": ">=3.1.5",
+      "find-my-way": ">=9.7.0",
+      "postcss": ">=8.5.23"
+    }
   }
 }
