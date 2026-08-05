@@ -14,12 +14,16 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/src/index.js",
     "migrate": "tsx scripts/migrate.ts",
+    "check-env": "tsx scripts/check-env.ts",
+    "create-admin": "tsx scripts/create-admin.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "lint": "eslint . --ext .ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/formbody": "^8.0.2",
     "@node-rs/argon2": "^2.0.2",
     "@zxcvbn-ts/core": "^4.1.2",
     "@zxcvbn-ts/language-common": "^4.1.2",
@@ -35,5 +39,12 @@
     "tsx": "^4.16.0",
     "typescript": "^5.5.0",
     "vitest": "^4.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-uri": ">=3.1.5",
+      "find-my-way": ">=9.7.0",
+      "postcss": ">=8.5.23"
+    }
   }
 }

@@ -2,10 +2,16 @@ import Fastify from 'fastify';
 import { config } from './config/index.js';
 import { getPool, closePool } from './core/db/index.js';
 import { createWebhookReceiver } from './web/webhookReceiver.js';
+import { createAssistantRoutes } from './web/assistant.js';
+import { AnthropicLlmClient } from './integrations/anthropic/client.js';
 import { appendAudit } from './core/audit/writer.js';
 import { enqueueJob } from './core/queue/jobs.js';
 import { enterCorrelation } from './core/obs/logger.js';
 import { registry, renderMetrics } from './core/obs/metrics.js';
+import { createConsole } from './console/web/plugin.js';
+import { PgUsersRepo, PgSessionsRepo } from './console/web/repos.js';
+import { defaultHasher } from './console/auth/password.js';
+import { keyringFromConfig } from './core/crypto/envelope.js';
 
 /**
  * Application entrypoint (web service). At this foundation stage it boots
@@ -15,7 +21,9 @@ import { registry, renderMetrics } from './core/obs/metrics.js';
  */
 export function buildServer() {
   const cfg = config();
-  const app = Fastify({ logger: { level: cfg.logLevel } });
+  // trustProxy: behind DO App Platform's LB the client IP arrives via
+  // X-Forwarded-For; without this, IP-based checks would see the LB's address.
+  const app = Fastify({ logger: { level: cfg.logLevel }, trustProxy: cfg.trustProxy });
 
   // Bind each request's id as the correlation id for logs + audit.
   app.addHook('onRequest', async (req) => {
@@ -24,6 +32,13 @@ export function buildServer() {
 
   // Liveness — process is up.
   app.get('/healthz', async () => ({ status: 'ok' }));
+
+  // Root: service info so `/` isn't a bare 404. Lists the real endpoints.
+  app.get('/', async () => ({
+    service: 'darian-agents',
+    status: 'ok',
+    endpoints: ['/console', '/assistant', '/healthz', '/readyz', '/metrics', 'POST /webhooks/:source'],
+  }));
 
   // Prometheus metrics.
   app.get('/metrics', async (_req, reply) => {
@@ -65,6 +80,38 @@ export function buildServer() {
             dedupeKey: `meeting_ingest:${deliveryId}`,
           });
         },
+      }),
+    );
+  }
+
+  // Admin console (server-rendered UI + auth). Mounted under /console.
+  void app.register(
+    createConsole({
+      pool: getPool(),
+      users: new PgUsersRepo(getPool()),
+      sessions: new PgSessionsRepo(getPool()),
+      hasher: defaultHasher(),
+      now: () => new Date(),
+      secureCookies: cfg.env === 'production',
+      ttls: {
+        idleSec: cfg.session.idleTtlSec,
+        absoluteSec: cfg.session.absoluteTtlSec,
+        sudoWindowSec: cfg.session.sudoWindowSec,
+      },
+      ...(cfg.envelope.masterKey ? { keyring: keyringFromConfig() } : {}),
+    }),
+  );
+
+  // Personal-assistant HUD (voice/text query surface over the commitments
+  // ledger). Registered only when its shared access token and the Anthropic
+  // key are configured; strictly read-only against our own provenance store.
+  if (cfg.assistant.accessToken && cfg.anthropic.apiKey) {
+    void app.register(
+      createAssistantRoutes({
+        pool: getPool(),
+        llm: new AnthropicLlmClient(),
+        accessToken: cfg.assistant.accessToken,
+        allowedIps: cfg.assistant.allowedIps,
       }),
     );
   }

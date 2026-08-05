@@ -160,7 +160,12 @@ wiring over these and are the remaining piece.
   on DO Managed Postgres. Secrets are App Platform secrets (SECRET-typed), never
   in the repo.
 - **Least-privilege role** — `scripts/provision-roles.sql` creates `app_rw`; the
-  migrations grant it INSERT+SELECT-only on `audit_log` (append-only).
+  migrations grant it INSERT+SELECT-only on `audit_log` (append-only). The
+  **migrate job runs as the DB admin** (DDL + grants); the **web/worker run as
+  `app_rw`** (`DATABASE_URL` secret = the app_rw connection string), so the
+  append-only guarantee actually holds at runtime.
+- **`pnpm check-env`** (`scripts/check-env.ts`) — preflight that fails fast and
+  lists which secrets are set vs missing per feature.
 - **Envelope encryption** (`core/crypto/envelope.ts`) — per-record AES-256-GCM
   data key wrapped by the master KEK; self-describing, key-versioned blob so the
   KEK rotates while old records stay readable. Used for `raw_artifacts.content_enc`
@@ -183,6 +188,11 @@ On-demand pipeline (`products/repo/`):
 ## Scalability & operations (enterprise hardening)
 
 Layered on the build-order steps after a code review:
+- **End-to-end worker handlers** — `meeting_ingest` fetches the transcript via
+  the Fireflies adapter (`integrations/fireflies/`) then runs `processMeeting`;
+  `repo_score` shallow-clones (`integrations/github/clone.ts`: no hooks, depth 1,
+  ephemeral, auto-removed) then runs `scoreRepo`. So a verified webhook now flows
+  all the way to HubSpot Projects/Tasks.
 - **Async decoupling** — the webhook receiver enqueues a durable job
   (`jobs` table, migration 0003, idempotent on delivery id); worker instances
   claim with `FOR UPDATE SKIP LOCKED` and run the pipeline. Many workers drain
@@ -219,7 +229,7 @@ Layered on the build-order steps after a code review:
 | 4 | Trigger registry: webhook (replay protection, constant-time sig, rate limits) + cron + on-demand | ✅ done |
 | 5 | HubSpot integration: Agent CLI wrapper + Projects API fallback + admin-mode owner resolution + egress allowlist | ✅ done |
 | 6 | Product A full path | ✅ done |
-| 7 | Admin console: auth + MFA + sudo-mode + SoD RBAC, editors, escalation queue, audit viewer, kill-switch | 🟡 security core done; HTTP/UI wiring pending |
+| 7 | Admin console: auth + MFA + sudo-mode + SoD RBAC, editors, escalation queue, audit viewer, kill-switch | ✅ done (server-rendered console at /console) |
 | 8 | DO App Platform deploy (web + worker), append-only audit role, envelope keys | ✅ done |
 | 9 | Product B: sandboxed GitHub ingest → pre-scan → Dev/Security/CTO board → scorecard | ✅ done |
 

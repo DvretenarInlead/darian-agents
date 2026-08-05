@@ -34,7 +34,7 @@ export async function enqueueJob(pool: Pool, input: EnqueueInput): Promise<Enque
   const res = await pool.query<{ id: string }>(
     `INSERT INTO jobs (kind, payload, dedupe_key, max_attempts)
      VALUES ($1, $2, $3, COALESCE($4, 5))
-     ON CONFLICT (dedupe_key) DO NOTHING
+     ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
      RETURNING id`,
     [input.kind, JSON.stringify(input.payload), input.dedupeKey ?? null, input.maxAttempts ?? null],
   );

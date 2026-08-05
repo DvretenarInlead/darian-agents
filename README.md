@@ -66,13 +66,13 @@ src/
     hubspot/       HubSpotClient port + Agent CLI / Projects-API / in-memory adapters, plan + sync
     anthropic/     LlmClient port + Anthropic adapter + stub (scoped egress/creds)
   products/
-    meeting/       Product A: extraction, reconciliation, board, pipeline, query agent
+    meeting/       Product A: extraction, reconciliation, board, pipeline, query + assistant agents
     repo/          Product B: sandboxed ingest, security pre-scan, scoring, pipeline
   console/
     auth/          TOTP, password (scrypt), HIBP k-anonymity, sessions, lockout, CSRF
     rbac/          Deny-by-default permissions + separation-of-duties
     killswitch.ts  Incident kill-switch (freezes external writes)
-  web/             Fastify plugins (hardened webhook receiver)
+  web/             Fastify plugins (hardened webhook receiver, voice-HUD assistant routes)
   index.ts         Web service entrypoint + health probes
   worker.ts        Worker entrypoint (async jobs)
 docs/              Architecture, security, and ISO compliance mapping
