@@ -2,6 +2,8 @@ import Fastify from 'fastify';
 import { config } from './config/index.js';
 import { getPool, closePool } from './core/db/index.js';
 import { createWebhookReceiver } from './web/webhookReceiver.js';
+import { createAssistantRoutes } from './web/assistant.js';
+import { AnthropicLlmClient } from './integrations/anthropic/client.js';
 import { appendAudit } from './core/audit/writer.js';
 import { enqueueJob } from './core/queue/jobs.js';
 import { enterCorrelation } from './core/obs/logger.js';
@@ -97,6 +99,19 @@ export function buildServer() {
       ...(cfg.envelope.masterKey ? { keyring: keyringFromConfig() } : {}),
     }),
   );
+
+  // Personal-assistant HUD (voice/text query surface over the commitments
+  // ledger). Registered only when its shared access token and the Anthropic
+  // key are configured; strictly read-only against our own provenance store.
+  if (cfg.assistant.accessToken && cfg.anthropic.apiKey) {
+    void app.register(
+      createAssistantRoutes({
+        pool: getPool(),
+        llm: new AnthropicLlmClient(),
+        accessToken: cfg.assistant.accessToken,
+      }),
+    );
+  }
 
   return app;
 }

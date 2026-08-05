@@ -44,6 +44,9 @@ const envSchema = z.object({
 
   GITHUB_TOKEN: z.string().optional(),
 
+  /** Shared secret for the personal-assistant HUD; the route registers only when set. */
+  ASSISTANT_ACCESS_TOKEN: z.string().min(16).optional(),
+
   SESSION_ACCESS_TTL_SEC: z.coerce.number().int().positive().default(900),
   SESSION_IDLE_TTL_SEC: z.coerce.number().int().positive().default(1800),
   SESSION_ABSOLUTE_TTL_SEC: z.coerce.number().int().positive().default(43200),
@@ -67,6 +70,7 @@ export interface Config {
   fireflies: { apiKey: string | undefined; webhookSecret: string | undefined; timestampToleranceSec: number };
   hubspot: { accessToken: string | undefined; serviceKey: string | undefined; projectsApiVersion: string };
   github: { token: string | undefined };
+  assistant: { accessToken: string | undefined };
   session: { accessTtlSec: number; idleTtlSec: number; absoluteTtlSec: number; sudoWindowSec: number };
   egressAllowlist: string[];
   auditShip: { endpoint: string | undefined; token: string | undefined };
@@ -91,6 +95,7 @@ function build(raw: RawEnv): Config {
       projectsApiVersion: raw.HUBSPOT_PROJECTS_API_VERSION,
     },
     github: { token: raw.GITHUB_TOKEN },
+    assistant: { accessToken: raw.ASSISTANT_ACCESS_TOKEN },
     session: {
       accessTtlSec: raw.SESSION_ACCESS_TTL_SEC,
       idleTtlSec: raw.SESSION_IDLE_TTL_SEC,

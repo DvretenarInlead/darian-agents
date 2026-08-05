@@ -49,6 +49,8 @@ const AGENT_SCOPES: Record<AgentName, AgentScope> = {
   // Security + Dev read GitHub repos for Product B scoring.
   security: { secrets: ['anthropic', 'github'], egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.github] },
   dev: { secrets: ['anthropic', 'github'], egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.github] },
+  // Personal assistant answers from our own provenance store; LLM only, no other egress.
+  assistant: ANTHROPIC,
 };
 
 export class CredentialScopeError extends Error {}
