@@ -2,6 +2,8 @@ import Fastify from 'fastify';
 import { config } from './config/index.js';
 import { getPool, closePool } from './core/db/index.js';
 import { createWebhookReceiver } from './web/webhookReceiver.js';
+import { createAssistantRoutes } from './web/assistant.js';
+import { AnthropicLlmClient } from './integrations/anthropic/client.js';
 import { appendAudit } from './core/audit/writer.js';
 import { enqueueJob } from './core/queue/jobs.js';
 import { enterCorrelation } from './core/obs/logger.js';
@@ -19,7 +21,9 @@ import { keyringFromConfig } from './core/crypto/envelope.js';
  */
 export function buildServer() {
   const cfg = config();
-  const app = Fastify({ logger: { level: cfg.logLevel } });
+  // trustProxy: behind DO App Platform's LB the client IP arrives via
+  // X-Forwarded-For; without this, IP-based checks would see the LB's address.
+  const app = Fastify({ logger: { level: cfg.logLevel }, trustProxy: cfg.trustProxy });
 
   // Bind each request's id as the correlation id for logs + audit.
   app.addHook('onRequest', async (req) => {
@@ -33,7 +37,7 @@ export function buildServer() {
   app.get('/', async () => ({
     service: 'darian-agents',
     status: 'ok',
-    endpoints: ['/console', '/healthz', '/readyz', '/metrics', 'POST /webhooks/:source'],
+    endpoints: ['/console', '/assistant', '/healthz', '/readyz', '/metrics', 'POST /webhooks/:source'],
   }));
 
   // Prometheus metrics.
@@ -97,6 +101,20 @@ export function buildServer() {
       ...(cfg.envelope.masterKey ? { keyring: keyringFromConfig() } : {}),
     }),
   );
+
+  // Personal-assistant HUD (voice/text query surface over the commitments
+  // ledger). Registered only when its shared access token and the Anthropic
+  // key are configured; strictly read-only against our own provenance store.
+  if (cfg.assistant.accessToken && cfg.anthropic.apiKey) {
+    void app.register(
+      createAssistantRoutes({
+        pool: getPool(),
+        llm: new AnthropicLlmClient(),
+        accessToken: cfg.assistant.accessToken,
+        allowedIps: cfg.assistant.allowedIps,
+      }),
+    );
+  }
 
   return app;
 }

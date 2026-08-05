@@ -14,7 +14,7 @@ import { z } from 'zod';
  *     for instruction-smuggling before being fed onward (see sanitize.ts).
  */
 
-/** Canonical agent roster. Orchestrator/Router runs the board; the other six are board agents. */
+/** Canonical agent roster. Orchestrator/Router runs the board; six are board agents. */
 export const AGENTS = [
   'orchestrator', // Orchestrator / Router — not a board voter; runs the board
   'project_manager',
@@ -23,6 +23,7 @@ export const AGENTS = [
   'data_quality', // Data Quality / Extraction
   'dev',
   'cto', // CTO / Architect — breaks non-security ties
+  'assistant', // Personal assistant (voice/HUD query surface) — read-only, not a board voter
 ] as const;
 
 export type AgentName = (typeof AGENTS)[number];
