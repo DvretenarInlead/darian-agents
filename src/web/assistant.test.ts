@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { createAssistantRoutes } from './assistant.js';
 import { StubLlmClient } from '../integrations/anthropic/client.js';
+import { StubVoiceClient, type VoiceClient } from '../integrations/elevenlabs/client.js';
 import type { AuditEvent } from '../core/audit/writer.js';
 
 const TOKEN = 'test-assistant-token-1234';
@@ -12,7 +13,7 @@ function stubPool(rows: Record<string, unknown>[] = []): Pool {
 }
 
 async function buildApp(
-  overrides: { audited?: AuditEvent[]; max?: number; allowedIps?: string[] } = {},
+  overrides: { audited?: AuditEvent[]; max?: number; allowedIps?: string[]; voice?: VoiceClient } = {},
 ): Promise<FastifyInstance> {
   const app = Fastify();
   const audited = overrides.audited ?? [];
@@ -22,6 +23,7 @@ async function buildApp(
       llm: new StubLlmClient(() => 'Nothing urgent today.'),
       accessToken: TOKEN,
       allowedIps: overrides.allowedIps ?? ['127.0.0.1'],
+      ...(overrides.voice ? { voice: overrides.voice } : {}),
       rateLimit: { windowMs: 60_000, max: overrides.max ?? 20 },
       nowMs: () => 1_700_000_000_000,
       nowIso: () => '2026-08-05T12:00:00.000Z',
@@ -52,7 +54,7 @@ describe('assistant routes', () => {
     const res = await app.inject({ method: 'GET', url: '/assistant' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('text/html');
-    expect(res.body).toContain('Personal Assistant');
+    expect(res.body).toContain('personal assistant');
     expect(res.body).toContain('/api/assistant/ask');
     expect(res.body).toContain('hi helper');
   });
@@ -169,6 +171,111 @@ describe('assistant routes', () => {
         allowedIps: ['not-an-ip'],
       }),
     ).toThrow(/invalid IP allowlist entry/);
+  });
+
+  it('reports voice capabilities based on configuration', async () => {
+    const withoutVoice = await buildApp();
+    expect((await withoutVoice.inject({ method: 'GET', url: '/api/assistant/voice' })).json()).toEqual({
+      tts: false,
+      stt: false,
+    });
+
+    const voice = new StubVoiceClient(
+      () => ({ audio: Buffer.from('mp3'), mime: 'audio/mpeg' }),
+      () => 'never',
+    );
+    const withVoice = await buildApp({ voice });
+    expect((await withVoice.inject({ method: 'GET', url: '/api/assistant/voice' })).json()).toEqual({
+      tts: true,
+      stt: true,
+    });
+  });
+
+  it('returns 501 from tts/stt when no voice provider is configured', async () => {
+    const app = await buildApp();
+    const tts = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/tts',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      payload: { text: 'hello' },
+    });
+    expect(tts.statusCode).toBe(501);
+
+    const stt = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/stt',
+      headers: { 'content-type': 'audio/webm', authorization: `Bearer ${TOKEN}` },
+      payload: Buffer.from('audio-bytes'),
+    });
+    expect(stt.statusCode).toBe(501);
+  });
+
+  it('synthesizes speech through the provider (auth required)', async () => {
+    const spoken: string[] = [];
+    const voice = new StubVoiceClient(
+      (text) => {
+        spoken.push(text);
+        return { audio: Buffer.from('fake-mp3-bytes'), mime: 'audio/mpeg' };
+      },
+      () => 'never',
+    );
+    const app = await buildApp({ voice });
+
+    const unauthorized = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/tts',
+      headers: { 'content-type': 'application/json' },
+      payload: { text: 'hello' },
+    });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/tts',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      payload: { text: 'hello there' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('audio/mpeg');
+    expect(res.rawPayload.toString()).toBe('fake-mp3-bytes');
+    expect(spoken).toEqual(['hello there']);
+  });
+
+  it('transcribes recorded audio through the provider', async () => {
+    const received: { bytes: number; mime: string }[] = [];
+    const voice = new StubVoiceClient(
+      () => ({ audio: Buffer.alloc(0), mime: 'audio/mpeg' }),
+      (audio, mime) => {
+        received.push({ bytes: audio.length, mime });
+        return 'what is my priority today';
+      },
+    );
+    const app = await buildApp({ voice });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/stt',
+      headers: { 'content-type': 'audio/webm', authorization: `Bearer ${TOKEN}` },
+      payload: Buffer.from('opus-audio-bytes'),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ text: 'what is my priority today' });
+    expect(received).toEqual([{ bytes: 'opus-audio-bytes'.length, mime: 'audio/webm' }]);
+  });
+
+  it('rejects empty audio uploads (400)', async () => {
+    const voice = new StubVoiceClient(
+      () => ({ audio: Buffer.alloc(0), mime: 'audio/mpeg' }),
+      () => 'never',
+    );
+    const app = await buildApp({ voice });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/stt',
+      headers: { 'content-type': 'audio/webm', authorization: `Bearer ${TOKEN}` },
+      payload: Buffer.alloc(0),
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it('rate-limits by IP (429) before touching auth or the LLM', async () => {

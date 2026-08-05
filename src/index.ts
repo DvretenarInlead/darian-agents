@@ -4,6 +4,7 @@ import { getPool, closePool } from './core/db/index.js';
 import { createWebhookReceiver } from './web/webhookReceiver.js';
 import { createAssistantRoutes } from './web/assistant.js';
 import { AnthropicLlmClient } from './integrations/anthropic/client.js';
+import { ElevenLabsVoiceClient } from './integrations/elevenlabs/client.js';
 import { appendAudit } from './core/audit/writer.js';
 import { enqueueJob } from './core/queue/jobs.js';
 import { enterCorrelation } from './core/obs/logger.js';
@@ -112,6 +113,9 @@ export function buildServer() {
         llm: new AnthropicLlmClient(),
         accessToken: cfg.assistant.accessToken,
         allowedIps: cfg.assistant.allowedIps,
+        // Provider voice (ears + mouth) only when the key is configured; the
+        // HUD falls back to the browser's built-in voice otherwise.
+        ...(cfg.elevenlabs.apiKey ? { voice: new ElevenLabsVoiceClient() } : {}),
       }),
     );
   }
