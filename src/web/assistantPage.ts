@@ -2,86 +2,243 @@
  * The laptop voice HUD, served at GET /assistant as a single self-contained
  * page (no external assets, so the app's egress posture is unchanged).
  *
- * Ears + mouth live entirely in the browser: SpeechRecognition (Web Speech API)
- * for speech-to-text and speechSynthesis for the reply, so no audio ever
- * reaches our servers — only the final transcript is POSTed to
- * /api/assistant/ask. The access token is entered once and kept in
- * localStorage; browsers gate the microphone behind HTTPS (or localhost).
- * Recognition needs a Chromium-based browser; the text box always works.
+ * Ears + mouth: recorded audio → our API → ElevenLabs STT, and answer text →
+ * our API → ElevenLabs TTS, when the provider is configured (capability probe
+ * at /api/assistant/voice); the browser's Web Speech API covers wake-phrase
+ * spotting and acts as the full fallback. The access token is entered once and
+ * kept in localStorage; browsers gate the microphone behind HTTPS (or
+ * localhost).
+ *
+ * The face: a CSS-only orb driven by a tiny state machine — idle / wake
+ * (always-listening) / listen (recording, mic-level reactive via a CSS var) /
+ * think (waiting for the answer) / speak (audio playing).
  */
 export const ASSISTANT_PAGE = /* html */ `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Assistant</title>
+<title>Helper</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg0: #05070f; --bg1: #0b1020; --panel: rgba(17, 26, 48, .72);
+    --line: rgba(84, 118, 190, .22); --text: #dbe4ff; --dim: #7487b8;
+    --cyan: #59e3ff; --blue: #4f7cff; --violet: #9a6bff; --amber: #ffc35c;
+    --level: 0; /* live mic level 0..1, set from JS while recording */
+  }
   * { box-sizing: border-box; }
+  html { height: 100%; }
   body {
-    margin: 0; min-height: 100vh; display: flex; flex-direction: column;
-    background: radial-gradient(1200px 600px at 50% -10%, #17233b 0%, #0b1020 55%, #070b16 100%);
-    color: #dbe4ff; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; min-height: 100vh; height: 100%; display: flex; flex-direction: column; color: var(--text);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background:
+      radial-gradient(1100px 520px at 50% -12%, #16224077 0%, transparent 60%),
+      radial-gradient(900px 600px at 85% 110%, #251a4d55 0%, transparent 55%),
+      linear-gradient(180deg, var(--bg1) 0%, var(--bg0) 100%);
+    overflow: hidden;
   }
+
+  /* ---------- header ---------- */
   header {
-    display: flex; align-items: center; gap: .75rem; padding: 1rem 1.25rem;
-    border-bottom: 1px solid #1d2a45;
+    display: flex; align-items: center; gap: .8rem; padding: .9rem 1.2rem;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(11,16,32,.9), rgba(11,16,32,.4));
+    backdrop-filter: blur(8px);
   }
-  header h1 { font-size: 1rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; margin: 0; flex: 1; }
-  header .dot { width: .6rem; height: .6rem; border-radius: 50%; background: #3a4b76; }
-  header .dot.live { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
-  select, input, button { font: inherit; }
-  select {
-    background: #101a30; color: inherit; border: 1px solid #24365c; border-radius: .5rem; padding: .3rem .5rem;
+  .brand { display: flex; align-items: baseline; gap: .6rem; flex: 1; min-width: 0; }
+  .brand h1 {
+    margin: 0; font-size: .95rem; font-weight: 700; letter-spacing: .34em;
+    text-transform: uppercase;
+    background: linear-gradient(90deg, var(--cyan), var(--violet));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
   }
-  #wakePhrase {
-    background: #101a30; color: inherit; border: 1px solid #24365c; border-radius: .5rem;
-    padding: .2rem .4rem; width: 6.5rem;
+  .brand span { font-size: .72rem; letter-spacing: .18em; text-transform: uppercase; color: var(--dim); white-space: nowrap; }
+  .pill {
+    font-size: .7rem; letter-spacing: .08em; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 999px; padding: .18rem .6rem;
+    display: inline-flex; align-items: center; gap: .35rem; white-space: nowrap;
   }
-  #log { flex: 1; overflow-y: auto; padding: 1.25rem; display: flex; flex-direction: column; gap: .75rem; }
-  .msg { max-width: 46rem; padding: .65rem .9rem; border-radius: .9rem; white-space: pre-wrap; }
-  .me { align-self: flex-end; background: #22345c; border-bottom-right-radius: .25rem; }
-  .agent { align-self: flex-start; background: #121c33; border: 1px solid #1e2c4d; border-bottom-left-radius: .25rem; }
-  .sys { align-self: center; color: #7487b8; font-size: .85rem; }
-  footer { padding: 1rem 1.25rem 1.5rem; display: flex; gap: .75rem; align-items: center; }
+  .pill b { color: var(--text); font-weight: 600; }
+  .pill .dot { width: .45rem; height: .45rem; border-radius: 50%; background: #3a4b76; }
+  .pill .dot.on { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+  button, input, select { font: inherit; color: inherit; }
+  .iconbtn {
+    background: transparent; border: 1px solid var(--line); border-radius: .6rem;
+    padding: .35rem .6rem; cursor: pointer; color: var(--dim);
+  }
+  .iconbtn:hover { color: var(--text); border-color: #3b5aa0; }
+
+  /* ---------- settings popover ---------- */
+  #settings {
+    position: absolute; top: 3.4rem; right: 1rem; z-index: 30; width: 19rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 1rem;
+    padding: 1rem 1.1rem; backdrop-filter: blur(14px);
+    box-shadow: 0 18px 50px rgba(0,0,0,.5);
+    display: none;
+  }
+  #settings.open { display: block; }
+  #settings h2 { margin: 0 0 .6rem; font-size: .72rem; letter-spacing: .22em; text-transform: uppercase; color: var(--dim); }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .42rem 0; font-size: .88rem; }
+  .row + .row { border-top: 1px dashed rgba(84,118,190,.14); }
+  .row select, .row input[type=text] {
+    background: rgba(8, 13, 28, .8); border: 1px solid var(--line); border-radius: .5rem;
+    padding: .28rem .5rem; max-width: 9.5rem;
+  }
+  .row .linkish { background: none; border: none; color: var(--cyan); cursor: pointer; padding: 0; }
+
+  /* ---------- stage: the face ---------- */
+  main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #stage { display: flex; flex-direction: column; align-items: center; padding: 1.6rem 0 .4rem; }
+  #orbWrap { position: relative; width: 148px; height: 148px; cursor: pointer; }
+  #orb, #orb::before, #orb::after, .ring { position: absolute; border-radius: 50%; }
+  #orb {
+    inset: 18px;
+    background:
+      radial-gradient(circle at 32% 30%, rgba(255,255,255,.85) 0%, transparent 22%),
+      radial-gradient(circle at 50% 55%, var(--blue) 0%, var(--violet) 58%, #1b1040 100%);
+    box-shadow:
+      0 0 calc(26px + 60px * var(--level)) rgba(89, 227, 255, calc(.28 + .5 * var(--level))),
+      inset 0 -14px 30px rgba(0,0,0,.45);
+    transform: scale(calc(1 + .22 * var(--level)));
+    transition: transform .08s linear, box-shadow .12s linear;
+    animation: breathe 5.2s ease-in-out infinite;
+  }
+  #orb::before {
+    content: ''; inset: -6%;
+    background: conic-gradient(from 0deg, transparent 0 40%, rgba(89,227,255,.35) 50%, transparent 60% 100%);
+    animation: swirl 7s linear infinite; opacity: .0; transition: opacity .4s;
+  }
+  #orb::after {
+    content: ''; inset: 26%;
+    background: radial-gradient(circle at 45% 40%, rgba(255,255,255,.5), transparent 60%);
+    filter: blur(2px);
+  }
+  .ring { inset: 0; border: 1px solid rgba(89,227,255,.16); opacity: 0; transition: opacity .5s; }
+  .ring.r2 { inset: -14px; border-color: rgba(154,107,255,.12); }
+
+  @keyframes breathe { 50% { transform: scale(calc(1.045 + .22 * var(--level))); } }
+  @keyframes swirl { to { transform: rotate(360deg); } }
+  @keyframes ringpulse { 0% { transform: scale(.92); opacity: .55; } 100% { transform: scale(1.25); opacity: 0; } }
+  @keyframes talk { 0%, 100% { transform: scale(1); } 30% { transform: scale(1.07); } 60% { transform: scale(1.02); } 80% { transform: scale(1.06); } }
+
+  /* state skins */
+  body[data-state=wake]   .ring { opacity: 1; }
+  body[data-state=listen] #orb {
+    background:
+      radial-gradient(circle at 32% 30%, rgba(255,255,255,.9) 0%, transparent 22%),
+      radial-gradient(circle at 50% 55%, var(--cyan) 0%, var(--blue) 62%, #0b2040 100%);
+    animation: none;
+  }
+  body[data-state=listen] .ring { opacity: 1; animation: ringpulse 1.6s ease-out infinite; }
+  body[data-state=listen] .ring.r2 { animation-delay: .5s; }
+  body[data-state=think] #orb::before { opacity: 1; }
+  body[data-state=think] #orb { animation: breathe 1.6s ease-in-out infinite; }
+  body[data-state=speak] #orb {
+    background:
+      radial-gradient(circle at 32% 30%, rgba(255,255,255,.9) 0%, transparent 22%),
+      radial-gradient(circle at 50% 55%, var(--violet) 0%, var(--blue) 60%, #180f38 100%);
+    animation: talk 1.1s ease-in-out infinite;
+  }
+
+  #stateLabel {
+    margin-top: .9rem; font-size: .72rem; letter-spacing: .3em; text-transform: uppercase;
+    color: var(--dim); min-height: 1.1em; text-align: center;
+  }
+  #stateLabel.hot { color: var(--cyan); }
+
+  /* ---------- transcript ---------- */
+  #log {
+    flex: 1; overflow-y: auto; padding: 1rem 1.4rem 1.2rem; display: flex;
+    flex-direction: column; gap: .7rem; scrollbar-width: thin;
+    mask-image: linear-gradient(180deg, transparent 0, #000 1.2rem);
+  }
+  #log > * { max-width: 620px; width: fit-content; margin-inline: auto; }
+  .msg {
+    padding: .68rem 1rem; border-radius: 1.1rem; white-space: pre-wrap; width: fit-content;
+    animation: rise .25s ease-out;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  .me {
+    margin-left: auto !important; margin-right: 0 !important;
+    background: linear-gradient(135deg, #24406e, #203058);
+    border: 1px solid rgba(120,160,255,.25); border-bottom-right-radius: .3rem;
+  }
+  .agent {
+    margin-right: auto !important; margin-left: 0 !important;
+    background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: .3rem;
+    backdrop-filter: blur(6px);
+  }
+  .sys { color: var(--dim); font-size: .8rem; text-align: center; }
+
+  /* ---------- composer ---------- */
+  footer {
+    display: flex; gap: .7rem; align-items: center; padding: .9rem 1.2rem 1.2rem;
+    border-top: 1px solid var(--line);
+    background: linear-gradient(0deg, rgba(11,16,32,.95), rgba(11,16,32,.35));
+    backdrop-filter: blur(8px);
+  }
   #q {
-    flex: 1; background: #0f1830; color: inherit; border: 1px solid #24365c;
-    border-radius: 999px; padding: .7rem 1.1rem; outline: none;
+    flex: 1; background: rgba(8, 13, 28, .85); border: 1px solid var(--line);
+    border-radius: 999px; padding: .78rem 1.2rem; outline: none; min-width: 0;
   }
-  #q:focus { border-color: #3b5aa0; }
-  button {
-    cursor: pointer; border: none; border-radius: 999px; padding: .7rem 1.2rem;
-    background: #24365c; color: #dbe4ff;
+  #q:focus { border-color: #3b5aa0; box-shadow: 0 0 0 3px rgba(79,124,255,.12); }
+  #send {
+    border: 1px solid var(--line); background: rgba(36,54,92,.6); cursor: pointer;
+    border-radius: 999px; padding: .72rem 1.25rem;
   }
-  button:hover { background: #2c4270; }
-  #mic { width: 3.4rem; height: 3.4rem; font-size: 1.3rem; padding: 0; }
-  #mic.listening { background: #b91c1c; animation: pulse 1.2s infinite; }
-  @keyframes pulse { 50% { box-shadow: 0 0 0 12px rgba(185,28,28,.18); } }
-  .hidden { display: none; }
+  #send:hover { background: rgba(44,66,112,.8); }
+  #mic {
+    width: 3.5rem; height: 3.5rem; border-radius: 50%; border: 1px solid var(--line);
+    cursor: pointer; font-size: 1.25rem; flex: none; position: relative;
+    background: radial-gradient(circle at 35% 30%, #2c4270, #17233f);
+  }
+  #mic:hover { border-color: #3b5aa0; }
+  #mic.listening { border-color: transparent; background: radial-gradient(circle at 35% 30%, #ff6b6b, #a11d1d); }
+  #mic.listening::after {
+    content: ''; position: absolute; inset: -5px; border-radius: 50%;
+    border: 2px solid rgba(255,107,107,.5); animation: ringpulse 1.2s ease-out infinite;
+  }
+  .hidden { display: none !important; }
+  @media (max-width: 560px) { .brand span { display: none; } #log > * { max-width: 92%; } }
 </style>
 </head>
-<body>
+<body data-state="idle">
 <header>
-  <span class="dot" id="statusDot"></span>
-  <h1>Personal Assistant</h1>
-  <label class="sys">voice
+  <div class="brand"><h1>Helper</h1><span>personal assistant</span></div>
+  <span class="pill" id="voicePill"><span class="dot" id="voiceDot"></span><span id="voiceLabel">browser voice</span></span>
+  <span class="pill"><span class="dot" id="wakeDot"></span>wake&nbsp;<b id="wakeLabel">off</b></span>
+  <button class="iconbtn" id="gear" title="Settings">⚙</button>
+</header>
+
+<div id="settings">
+  <h2>Settings</h2>
+  <div class="row"><label for="lang">Language</label>
     <select id="lang">
       <option value="en-US">English</option>
       <option value="hr-HR">Hrvatski</option>
     </select>
-  </label>
-  <label class="sys"><input type="checkbox" id="speak" checked> speak replies</label>
-  <label class="sys" id="wakeWrap"><input type="checkbox" id="wake"> wake word
-    <input type="text" id="wakePhrase" value="hi helper" size="9" title="Say this phrase to summon the assistant">
-  </label>
-  <button id="resetToken" title="Change access token">token</button>
-</header>
+  </div>
+  <div class="row"><label for="speak">Speak replies</label><input type="checkbox" id="speak" checked></div>
+  <div class="row" id="wakeWrap"><label for="wake">Wake word</label><input type="checkbox" id="wake"></div>
+  <div class="row"><label for="wakePhrase">Phrase</label><input type="text" id="wakePhrase" value="hi helper"></div>
+  <div class="row"><span>Access token</span><button class="linkish" id="resetToken">change…</button></div>
+</div>
 
-<main id="log"></main>
+<main>
+  <div id="stage">
+    <div id="orbWrap" title="Click to talk">
+      <div class="ring"></div><div class="ring r2"></div>
+      <div id="orb"></div>
+    </div>
+    <div id="stateLabel">idle</div>
+  </div>
+  <div id="log"></div>
+</main>
 
 <footer>
-  <button id="mic" title="Hold conversation — click to talk">🎤</button>
-  <input id="q" placeholder="Ask about your commitments… (Enter to send)" autocomplete="off">
+  <button id="mic" title="Talk (or press Space)">🎤</button>
+  <input id="q" placeholder="Ask about your commitments…" autocomplete="off">
   <button id="send">Send</button>
 </footer>
 
@@ -90,9 +247,35 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
   const log = document.getElementById('log');
   const input = document.getElementById('q');
   const micBtn = document.getElementById('mic');
+  const orbWrap = document.getElementById('orbWrap');
   const langSel = document.getElementById('lang');
   const speakBox = document.getElementById('speak');
-  const dot = document.getElementById('statusDot');
+  const stateLabel = document.getElementById('stateLabel');
+  const wakeDot = document.getElementById('wakeDot');
+  const wakeLabel = document.getElementById('wakeLabel');
+  const voiceDot = document.getElementById('voiceDot');
+  const voiceLabel = document.getElementById('voiceLabel');
+
+  // ---- settings popover ----
+  const settings = document.getElementById('settings');
+  document.getElementById('gear').onclick = (e) => { e.stopPropagation(); settings.classList.toggle('open'); };
+  document.addEventListener('click', (e) => { if (!settings.contains(e.target)) settings.classList.remove('open'); });
+
+  // ---- face state machine ----
+  // base: idle | wake; transient overrides: listen | think | speak
+  let baseState = 'idle';
+  let override = null;
+  const LABELS = { idle: 'idle', wake: 'listening for wake word', listen: 'listening…', think: 'thinking…', speak: 'speaking' };
+  function render() {
+    const s = override || baseState;
+    document.body.dataset.state = s;
+    stateLabel.textContent = LABELS[s] || s;
+    stateLabel.classList.toggle('hot', s === 'listen' || s === 'speak');
+    if (s !== 'listen') setLevel(0);
+  }
+  function setBase(s) { baseState = s; render(); }
+  function setOverride(s) { override = s; render(); }
+  function setLevel(v) { document.documentElement.style.setProperty('--level', String(Math.max(0, Math.min(1, v)))); }
 
   const TOKEN_KEY = 'assistant_token';
   function getToken(forceAsk) {
@@ -112,6 +295,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
   function add(cls, text) {
     const div = document.createElement('div');
     div.className = 'msg ' + cls;
+    if (cls === 'sys') div.className = 'sys';
     div.textContent = text;
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
@@ -122,7 +306,10 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
   // browser's built-in voice when the provider isn't configured.
   const caps = { tts: false, stt: false };
   fetch('/api/assistant/voice').then(r => r.ok ? r.json() : null).then(c => {
-    if (c) { caps.tts = !!c.tts; caps.stt = !!c.stt; }
+    if (c) {
+      caps.tts = !!c.tts; caps.stt = !!c.stt;
+      if (caps.tts) { voiceDot.classList.add('on'); voiceLabel.textContent = 'premium voice'; }
+    }
   }).catch(() => {});
 
   function speakBrowser(text) {
@@ -159,12 +346,14 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
   async function speak(text) {
     if (!speakBox.checked) return;
     pauseListening();
+    setOverride('speak');
     try {
       if (caps.tts) await speakProvider(text);
       else await speakBrowser(text);
     } catch {
       await speakBrowser(text); // provider hiccup → still say it
     } finally {
+      setOverride(null);
       resumeListening();
     }
   }
@@ -174,6 +363,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     if (!q) return;
     add('me', q);
     input.value = '';
+    setOverride('think');
     const pending = add('agent', '…');
     try {
       const res = await fetch('/api/assistant/ask', {
@@ -182,7 +372,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
         body: JSON.stringify({ question: q }),
       });
       if (res.status === 401) {
-        pending.textContent = 'Unauthorized — click "token" and enter a valid access token.';
+        pending.textContent = 'Unauthorized — open settings and change the access token.';
         return;
       }
       if (res.status === 429) {
@@ -195,9 +385,12 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       }
       const data = await res.json();
       pending.textContent = data.answer;
-      speak(data.answer);
+      setOverride(null);
+      await speak(data.answer);
     } catch (err) {
       pending.textContent = 'Network error: ' + err;
+    } finally {
+      if (override === 'think') setOverride(null);
     }
   }
 
@@ -238,7 +431,8 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     ctx.createMediaStreamSource(stream).connect(analyser);
     const buf = new Uint8Array(analyser.fftSize);
 
-    micBtn.classList.add('listening'); dot.classList.add('live');
+    micBtn.classList.add('listening');
+    setOverride('listen');
     let stopped = false;
     const stop = () => {
       if (stopped) return; stopped = true;
@@ -246,7 +440,8 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       try { recorder.stop(); } catch {}
       stream.getTracks().forEach(t => t.stop());
       ctx.close().catch(() => {});
-      micBtn.classList.remove('listening'); dot.classList.remove('live');
+      micBtn.classList.remove('listening');
+      if (override === 'listen') setOverride(null);
     };
     activeRecording = stop;
 
@@ -258,6 +453,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       let sum = 0;
       for (let i = 0; i < buf.length; i++) { const d = (buf[i] - 128) / 128; sum += d * d; }
       const rms = Math.sqrt(sum / buf.length);
+      setLevel(rms * 6); // drive the orb with the live mic level
       const now = performance.now();
       if (rms > 0.02) { spokeAt = spokeAt || now; silentAt = 0; }
       else if (spokeAt) { silentAt = silentAt || now; if (now - silentAt > 1300) return stop(); }
@@ -294,6 +490,14 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     }
   }
 
+  function micTap() { micBtn.onclick && micBtn.onclick(); }
+  orbWrap.onclick = micTap;
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && document.activeElement !== input && document.activeElement.tagName !== 'INPUT') {
+      e.preventDefault(); micTap();
+    }
+  });
+
   if (!SR) {
     // No Web Speech API (non-Chromium): wake word needs it, but push-to-talk
     // still works through the server's ears when configured.
@@ -321,7 +525,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       rec = new SR();
       rec.lang = langSel.value;
       rec.interimResults = true;
-      rec.onstart = () => { micBtn.classList.add('listening'); dot.classList.add('live'); };
+      rec.onstart = () => { micBtn.classList.add('listening'); setOverride('listen'); };
       rec.onresult = (e) => {
         const text = Array.from(e.results).map(r => r[0].transcript).join(' ');
         input.value = text;
@@ -329,7 +533,9 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       };
       rec.onerror = (e) => { if (e.error !== 'aborted') add('sys', 'Mic error: ' + e.error); };
       rec.onend = () => {
-        micBtn.classList.remove('listening'); dot.classList.remove('live'); rec = null;
+        micBtn.classList.remove('listening');
+        if (override === 'listen') setOverride(null);
+        rec = null;
         if (wakeBox.checked) startWakeLoop();
       };
       rec.start();
@@ -357,14 +563,12 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
           ask(after);
         } else if (caps.stt) {
           // Provider ears: acknowledge, then record the question properly.
-          add('sys', 'Listening… ask your question.');
           (async () => {
             await speak(langSel.value.startsWith('hr') ? 'Da?' : 'Yes?');
             await captureAndAsk();
           })();
         } else {
           awaitingQuestion = true;
-          add('sys', 'Listening… ask your question.');
           speak(langSel.value.startsWith('hr') ? 'Da?' : 'Yes?');
           clearTimeout(awaitTimer);
           awaitTimer = setTimeout(() => { awaitingQuestion = false; }, 12000);
@@ -384,7 +588,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       wakeRec.lang = langSel.value;
       wakeRec.continuous = true;
       wakeRec.interimResults = false;
-      wakeRec.onstart = () => dot.classList.add('live');
+      wakeRec.onstart = () => { setBase('wake'); wakeDot.classList.add('on'); wakeLabel.textContent = 'on'; };
       wakeRec.onresult = (e) => {
         for (let i = e.resultIndex; i < e.results.length; i++) {
           if (e.results[i].isFinal) handleUtterance(e.results[i][0].transcript);
@@ -398,9 +602,9 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       };
       wakeRec.onend = () => {
         wakeRec = null;
-        dot.classList.remove('live');
         // Chrome ends recognition periodically — restart to stay always-on.
         if (wakeActive && !wakePaused && wakeBox.checked) setTimeout(startWakeLoop, 250);
+        else if (!wakeActive) { setBase('idle'); wakeDot.classList.remove('on'); wakeLabel.textContent = 'off'; }
       };
       wakeRec.start();
     }
@@ -408,7 +612,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     function stopWakeLoop() {
       wakeActive = false;
       if (wakeRec) { const r = wakeRec; wakeRec = null; r.stop(); }
-      dot.classList.remove('live');
+      setBase('idle'); wakeDot.classList.remove('on'); wakeLabel.textContent = 'off';
     }
 
     pauseListening = () => { if (wakeActive) { wakePaused = true; if (wakeRec) { const r = wakeRec; wakeRec = null; r.stop(); } } };
@@ -425,7 +629,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     langSel.addEventListener('change', () => { if (wakeActive) { stopWakeLoop(); wakeBox.checked && startWakeLoop(); } });
   }
 
-  add('sys', 'Click the mic and ask, or enable “wake word” and just say “hi helper — what did I commit to this week?” / “Što mi je danas prioritet?”');
+  add('sys', 'Tap the orb (or press Space) and ask — or enable the wake word in settings and just say “hi helper”.');
 })();
 </script>
 </body>
