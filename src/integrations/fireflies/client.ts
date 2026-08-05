@@ -11,14 +11,23 @@ import { resilientFetch } from '../../core/net/resilientFetch.js';
  * verified against the provisioned plan/scopes (a brief "remaining
  * confirmation"). Response parsing is isolated in `sentencesToText` and tested.
  */
+export interface TranscriptMeta {
+  id: string;
+  title: string | null;
+  dateIso: string | null;
+}
+
 export interface FirefliesClient {
   fetchTranscript(meetingId: string): Promise<string>;
+  /** Newest-first listing used by the poller (pull-based ingestion, no webhook). */
+  listRecentTranscripts(limit: number): Promise<TranscriptMeta[]>;
 }
 
 const HOST = EGRESS_HOSTS.fireflies; // api.fireflies.ai
 const ENDPOINT = `https://${HOST}/graphql`;
 
 const QUERY = `query Transcript($id: String!) { transcript(id: $id) { title sentences { speaker_name text } } }`;
+const LIST_QUERY = `query Transcripts($limit: Int) { transcripts(limit: $limit) { id title date } }`;
 
 interface TranscriptResponse {
   data?: { transcript?: { title?: string; sentences?: Array<{ speaker_name?: string; text?: string }> } };
@@ -34,26 +43,58 @@ export function sentencesToText(resp: TranscriptResponse): string {
   return lines.join('\n');
 }
 
+interface ListResponse {
+  data?: { transcripts?: Array<{ id?: string; title?: string | null; date?: string | number | null }> };
+  errors?: Array<{ message: string }>;
+}
+
+/** Normalise the GraphQL transcripts listing. Pure. */
+export function transcriptsToList(resp: ListResponse): TranscriptMeta[] {
+  if (resp.errors?.length) throw new Error(`Fireflies error: ${resp.errors.map((e) => e.message).join('; ')}`);
+  return (resp.data?.transcripts ?? [])
+    .filter((t): t is { id: string; title?: string | null; date?: string | number | null } => typeof t.id === 'string' && t.id.length > 0)
+    .map((t) => ({
+      id: t.id,
+      title: t.title ?? null,
+      // Fireflies returns epoch millis or ISO depending on field/plan; normalise to ISO.
+      dateIso: typeof t.date === 'number' ? new Date(t.date).toISOString() : (t.date ?? null),
+    }));
+}
+
 export class GraphqlFirefliesClient implements FirefliesClient {
-  async fetchTranscript(meetingId: string): Promise<string> {
+  private async gql(query: string, variables: Record<string, unknown>): Promise<unknown> {
     assertEgressAllowed('data_quality', HOST);
     const apiKey = getScopedSecret('data_quality', 'fireflies');
     const res = await resilientFetch(ENDPOINT, {
       method: 'POST',
       headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ query: QUERY, variables: { id: meetingId } }),
+      body: JSON.stringify({ query, variables }),
     });
     if (!res.ok) throw new Error(`Fireflies request failed: ${res.status} ${res.statusText}`);
-    return sentencesToText((await res.json()) as TranscriptResponse);
+    return res.json();
+  }
+
+  async fetchTranscript(meetingId: string): Promise<string> {
+    return sentencesToText((await this.gql(QUERY, { id: meetingId })) as TranscriptResponse);
+  }
+
+  async listRecentTranscripts(limit: number): Promise<TranscriptMeta[]> {
+    return transcriptsToList((await this.gql(LIST_QUERY, { limit })) as ListResponse);
   }
 }
 
 /** Deterministic stub for tests/local runs. */
 export class StubFirefliesClient implements FirefliesClient {
-  constructor(private readonly transcripts: Record<string, string>) {}
+  constructor(
+    private readonly transcripts: Record<string, string>,
+    private readonly recent: TranscriptMeta[] = [],
+  ) {}
   async fetchTranscript(meetingId: string): Promise<string> {
     const t = this.transcripts[meetingId];
     if (t === undefined) throw new Error(`no stub transcript for ${meetingId}`);
     return t;
+  }
+  async listRecentTranscripts(_limit: number): Promise<TranscriptMeta[]> {
+    return this.recent;
   }
 }

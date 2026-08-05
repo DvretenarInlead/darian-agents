@@ -40,6 +40,8 @@ const envSchema = z.object({
 
   FIREFLIES_API_KEY: z.string().optional(),
   FIREFLIES_WEBHOOK_SECRET: z.string().optional(),
+  /** Poll interval for pull-based ingestion (minutes). 0 disables the poller. */
+  FIREFLIES_POLL_MINUTES: z.coerce.number().int().min(0).default(10),
   WEBHOOK_TIMESTAMP_TOLERANCE_SEC: z.coerce.number().int().positive().default(300),
 
   HUBSPOT_ACCESS_TOKEN: z.string().optional(),
@@ -80,7 +82,7 @@ export interface Config {
   db: { url: string; ssl: boolean; poolMax: number; caCert: string | undefined };
   envelope: { masterKey: string | undefined; keyVersion: number };
   anthropic: { apiKey: string | undefined; defaultModel: string; assistantModel: string };
-  fireflies: { apiKey: string | undefined; webhookSecret: string | undefined; timestampToleranceSec: number };
+  fireflies: { apiKey: string | undefined; webhookSecret: string | undefined; timestampToleranceSec: number; pollMinutes: number };
   hubspot: { accessToken: string | undefined; serviceKey: string | undefined; projectsApiVersion: string };
   github: { token: string | undefined };
   assistant: { accessToken: string | undefined; allowedIps: string[] };
@@ -103,6 +105,7 @@ function build(raw: RawEnv): Config {
       apiKey: raw.FIREFLIES_API_KEY,
       webhookSecret: raw.FIREFLIES_WEBHOOK_SECRET,
       timestampToleranceSec: raw.WEBHOOK_TIMESTAMP_TOLERANCE_SEC,
+      pollMinutes: raw.FIREFLIES_POLL_MINUTES,
     },
     hubspot: {
       accessToken: raw.HUBSPOT_ACCESS_TOKEN,

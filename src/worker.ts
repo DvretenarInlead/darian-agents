@@ -8,7 +8,9 @@ import { AnthropicLlmClient } from './integrations/anthropic/client.js';
 import { GraphqlFirefliesClient } from './integrations/fireflies/client.js';
 import { createHubSpotClient } from './integrations/hubspot/index.js';
 import { makeMeetingHandler } from './products/meeting/handler.js';
+import { pollFireflies } from './products/meeting/poll.js';
 import { makeRepoHandler } from './products/repo/handler.js';
+import { withCronLock } from './core/triggers/cronLock.js';
 
 /**
  * Worker entrypoint (code-review P0). Drains the durable job queue and runs the
@@ -29,11 +31,12 @@ async function start(): Promise<void> {
   log().info({ env: cfg.env }, 'worker started');
 
   const llm = new AnthropicLlmClient();
+  const fireflies = new GraphqlFirefliesClient();
   const handlers: Record<string, JobHandler> = {
     meeting_ingest: withCorrelation(
       makeMeetingHandler({
         pool,
-        fireflies: new GraphqlFirefliesClient(),
+        fireflies,
         llm,
         hubspot: createHubSpotClient(),
         projectDefaults: {
@@ -55,6 +58,31 @@ async function start(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
+  // Pull-based Fireflies ingestion: list newest transcripts on an interval and
+  // enqueue unseen ones (idempotent via job dedupe on meeting id). Complements
+  // the webhook trigger — webhook fires instantly, the poller catches anything
+  // a missed/failed webhook would drop. Cron advisory lock keeps it
+  // single-flight across worker instances.
+  const pollMs = cfg.fireflies.pollMinutes * 60_000;
+  const pollerDone = (async () => {
+    if (!cfg.fireflies.apiKey || pollMs === 0) return;
+    log().info({ intervalMin: cfg.fireflies.pollMinutes }, 'fireflies poller active');
+    while (!stopping) {
+      try {
+        const run = await withCronLock(pool, 'fireflies_poll', () =>
+          pollFireflies({ pool, fireflies, now: () => new Date().toISOString() }),
+        );
+        if (run.ran && run.result && run.result.enqueued > 0) {
+          log().info(run.result, 'fireflies poll enqueued new meetings');
+        }
+      } catch (err) {
+        log().error({ err: String(err) }, 'fireflies poll failed; will retry next interval');
+      }
+      // Sleep in short slices so shutdown stays prompt.
+      for (let waited = 0; waited < pollMs && !stopping; waited += 1_000) await sleep(1_000);
+    }
+  })();
+
   await runConsumer({
     claim: () => claimJob(pool),
     complete: (job) => {
@@ -71,6 +99,7 @@ async function start(): Promise<void> {
     onError: (job, err) => log().error({ jobId: job.id, kind: job.kind, err: String(err) }, 'job failed'),
   });
 
+  await pollerDone;
   await closePool();
   process.exit(0);
 }

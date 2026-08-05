@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { config } from './config/index.js';
 import { getPool, closePool } from './core/db/index.js';
 import { createWebhookReceiver } from './web/webhookReceiver.js';
+import { meetingIdFromPayload } from './products/meeting/handler.js';
 import { createAssistantRoutes } from './web/assistant.js';
 import { AnthropicLlmClient } from './integrations/anthropic/client.js';
 import { ElevenLabsVoiceClient } from './integrations/elevenlabs/client.js';
@@ -75,10 +76,14 @@ export function buildServer() {
             { eventType: 'ingest', product: 'meeting', actorId: null, subjectId: deliveryId, payload: { source, body } },
             new Date().toISOString(),
           );
+          // Dedupe on the MEETING id when the payload carries one, so the
+          // webhook and the backstop poller can never double-ingest the same
+          // meeting; delivery id remains the fallback key.
+          const meetingId = meetingIdFromPayload({ body });
           await enqueueJob(pool, {
             kind: 'meeting_ingest',
             payload: { source, deliveryId, body },
-            dedupeKey: `meeting_ingest:${deliveryId}`,
+            dedupeKey: `meeting_ingest:${meetingId ?? deliveryId}`,
           });
         },
       }),
