@@ -71,6 +71,9 @@ export function buildServer() {
         pool: getPool(),
         secret: cfg.fireflies.webhookSecret,
         toleranceSec: cfg.fireflies.timestampToleranceSec,
+        // Fireflies signs sha256=<hex HMAC(body)> in x-hub-signature — no
+        // timestamp/delivery headers, so the receiver runs in fireflies mode.
+        mode: 'fireflies',
         onVerified: async ({ source, deliveryId, body }) => {
           const pool = getPool();
           await appendAudit(
