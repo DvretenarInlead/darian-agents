@@ -10,15 +10,18 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Client } from 'pg';
 import { config } from '../src/config/index.js';
+import { sslConfig, stripSslParams } from '../src/core/db/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, '..', 'migrations');
 
 async function main(): Promise<void> {
   const cfg = config();
+  // Same TLS resolution as the app pool (managed-Postgres CA handling), and
+  // strip sslmode from the URL so it cannot override this ssl option.
   const client = new Client({
-    connectionString: cfg.db.url,
-    ssl: cfg.db.ssl ? { rejectUnauthorized: true } : false,
+    connectionString: stripSslParams(cfg.db.url),
+    ssl: sslConfig(cfg.db.ssl, cfg.db.caCert),
   });
   await client.connect();
 
