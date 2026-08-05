@@ -16,3 +16,7 @@ description = "Intentional fake secrets in unit-test fixtures (secret-detector t
 paths = [
   '''.*\.test\.ts$''',
 ]
+regexes = [
+  # ElevenLabs premade-voice ID ("Rachel") — a public catalog identifier, not a credential.
+  '''21m00Tcm4TlvDq8ikWAM''',
+]
