@@ -25,7 +25,9 @@ export interface VoiceClient {
 }
 
 const HOST = EGRESS_HOSTS.elevenlabs; // api.elevenlabs.io
-const TTS_MODEL = 'eleven_multilingual_v2'; // covers English + Croatian
+// Flash: ~75ms model latency vs several hundred for multilingual_v2, still
+// covers English + Croatian — the right trade for a conversational assistant.
+const TTS_MODEL = 'eleven_flash_v2_5';
 const STT_MODEL = 'scribe_v1';
 
 export class ElevenLabsVoiceClient implements VoiceClient {

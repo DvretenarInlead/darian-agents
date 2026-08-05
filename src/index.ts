@@ -111,6 +111,7 @@ export function buildServer() {
       createAssistantRoutes({
         pool: getPool(),
         llm: new AnthropicLlmClient(),
+        model: cfg.anthropic.assistantModel,
         accessToken: cfg.assistant.accessToken,
         allowedIps: cfg.assistant.allowedIps,
         // Provider voice (ears + mouth) only when the key is configured; the

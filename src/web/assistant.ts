@@ -6,7 +6,13 @@ import { InMemoryRateLimiter, type RateLimiter } from '../core/triggers/rateLimi
 import { appendAudit, type AuditEvent } from '../core/audit/writer.js';
 import type { LlmClient } from '../integrations/anthropic/client.js';
 import type { VoiceClient } from '../integrations/elevenlabs/client.js';
-import { askAssistant, QUESTION_MAX } from '../products/meeting/assistant.js';
+import {
+  askAssistant,
+  QUESTION_MAX,
+  HISTORY_MAX_TURNS,
+  HISTORY_TEXT_MAX,
+  type AssistantTurn,
+} from '../products/meeting/assistant.js';
 import { FREE_TEXT_MAX } from '../core/agents/contract.js';
 import { ASSISTANT_PAGE } from './assistantPage.js';
 
@@ -35,6 +41,8 @@ const AUDIO_BODY_LIMIT = 8_000_000; // 8 MB ≈ several minutes of Opus
 export interface AssistantRoutesOptions {
   pool: Pool;
   llm: LlmClient;
+  /** Fast model override for spoken answers (latency over depth). */
+  model?: string;
   /** Voice provider (TTS+STT). Omit → HUD falls back to browser voice. */
   voice?: VoiceClient;
   /** Shared secret the HUD presents as `Authorization: Bearer <token>`. */
@@ -116,15 +124,36 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
             type: 'object',
             required: ['question'],
             additionalProperties: false,
-            properties: { question: { type: 'string', minLength: 1, maxLength: QUESTION_MAX } },
+            properties: {
+              question: { type: 'string', minLength: 1, maxLength: QUESTION_MAX },
+              // Recent conversation turns for follow-up questions; bounded and
+              // re-sanitized server-side (normalizeHistory) before prompting.
+              history: {
+                type: 'array',
+                maxItems: HISTORY_MAX_TURNS,
+                items: {
+                  type: 'object',
+                  required: ['role', 'content'],
+                  additionalProperties: false,
+                  properties: {
+                    role: { type: 'string', enum: ['user', 'assistant'] },
+                    content: { type: 'string', maxLength: HISTORY_TEXT_MAX },
+                  },
+                },
+              },
+            },
           },
         },
       },
       async (req, reply) => {
         if (!(await authorize(req, reply))) return reply;
 
-        const { question } = req.body as { question: string };
-        const result = await askAssistant({ pool: opts.pool, llm: opts.llm }, question);
+        const { question, history } = req.body as { question: string; history?: AssistantTurn[] };
+        const result = await askAssistant(
+          { pool: opts.pool, llm: opts.llm, ...(opts.model ? { model: opts.model } : {}) },
+          question,
+          history,
+        );
 
         await audit(
           {

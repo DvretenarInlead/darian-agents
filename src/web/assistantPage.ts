@@ -326,6 +326,8 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     });
   }
 
+  // Barge-in: tapping the orb while the assistant talks cuts it off.
+  let stopSpeaking = null;
   async function speakProvider(text) {
     const res = await fetch('/api/assistant/tts', {
       method: 'POST',
@@ -336,8 +338,10 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     const url = URL.createObjectURL(await res.blob());
     await new Promise((resolve) => {
       const a = new Audio(url);
-      a.onended = a.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-      a.play().catch(() => resolve());
+      const done = () => { stopSpeaking = null; URL.revokeObjectURL(url); resolve(); };
+      stopSpeaking = () => { a.pause(); done(); };
+      a.onended = a.onerror = done;
+      a.play().catch(done);
     });
   }
 
@@ -358,6 +362,14 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     }
   }
 
+  // Recent turns (client-held, re-sanitized server-side) so follow-up
+  // questions like "and which of those is urgent?" work naturally.
+  const history = [];
+  function remember(role, content) {
+    history.push({ role, content: String(content).slice(0, 1000) });
+    while (history.length > 12) history.shift();
+  }
+
   async function ask(question) {
     const q = question.trim();
     if (!q) return;
@@ -369,7 +381,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       const res = await fetch('/api/assistant/ask', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: 'Bearer ' + getToken(false) },
-        body: JSON.stringify({ question: q }),
+        body: JSON.stringify({ question: q, history }),
       });
       if (res.status === 401) {
         pending.textContent = 'Unauthorized — open settings and change the access token.';
@@ -385,6 +397,8 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       }
       const data = await res.json();
       pending.textContent = data.answer;
+      remember('user', q);
+      remember('assistant', data.answer);
       setOverride(null);
       await speak(data.answer);
     } catch (err) {
@@ -456,7 +470,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       setLevel(rms * 6); // drive the orb with the live mic level
       const now = performance.now();
       if (rms > 0.02) { spokeAt = spokeAt || now; silentAt = 0; }
-      else if (spokeAt) { silentAt = silentAt || now; if (now - silentAt > 1300) return stop(); }
+      else if (spokeAt) { silentAt = silentAt || now; if (now - silentAt > 900) return stop(); }
       if (now - started > 15000) return stop();
       requestAnimationFrame(tick);
     })();
@@ -490,7 +504,12 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     }
   }
 
-  function micTap() { micBtn.onclick && micBtn.onclick(); }
+  function micTap() {
+    // Barge-in: if the assistant is talking, a tap silences it first.
+    if (stopSpeaking) { stopSpeaking(); return; }
+    if ('speechSynthesis' in window && speechSynthesis.speaking) { speechSynthesis.cancel(); return; }
+    micBtn.onclick && micBtn.onclick();
+  }
   orbWrap.onclick = micTap;
   document.addEventListener('keydown', (e) => {
     if (e.code === 'Space' && document.activeElement !== input && document.activeElement.tagName !== 'INPUT') {
