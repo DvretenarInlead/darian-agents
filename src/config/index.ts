@@ -48,6 +48,10 @@ const envSchema = z.object({
 
   /** Shared secret for the personal-assistant HUD; the route registers only when set. */
   ASSISTANT_ACCESS_TOKEN: z.string().min(16).optional(),
+
+  /** ElevenLabs (assistant voice: TTS + STT). Unset → HUD falls back to browser voice. */
+  ELEVENLABS_API_KEY: z.string().optional(),
+  ELEVENLABS_VOICE_ID: z.string().default('21m00Tcm4TlvDq8ikWAM'),
   /** CSV of IPs/CIDRs allowed to reach the assistant. Deny-by-default: empty = nobody. */
   ASSISTANT_ALLOWED_IPS: z.string().optional(),
 
@@ -78,6 +82,7 @@ export interface Config {
   hubspot: { accessToken: string | undefined; serviceKey: string | undefined; projectsApiVersion: string };
   github: { token: string | undefined };
   assistant: { accessToken: string | undefined; allowedIps: string[] };
+  elevenlabs: { apiKey: string | undefined; voiceId: string };
   trustProxy: boolean;
   session: { accessTtlSec: number; idleTtlSec: number; absoluteTtlSec: number; sudoWindowSec: number };
   egressAllowlist: string[];
@@ -104,6 +109,7 @@ function build(raw: RawEnv): Config {
     },
     github: { token: raw.GITHUB_TOKEN },
     assistant: { accessToken: raw.ASSISTANT_ACCESS_TOKEN, allowedIps: csv(raw.ASSISTANT_ALLOWED_IPS) },
+    elevenlabs: { apiKey: raw.ELEVENLABS_API_KEY, voiceId: raw.ELEVENLABS_VOICE_ID },
     trustProxy: raw.TRUST_PROXY,
     session: {
       accessTtlSec: raw.SESSION_ACCESS_TTL_SEC,

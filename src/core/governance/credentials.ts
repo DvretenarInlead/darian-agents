@@ -14,7 +14,7 @@ import { AGENTS, type AgentName } from '../agents/contract.js';
  * (console layer, later step) — scoping here is necessary, not sufficient.
  */
 
-export type ScopedSecret = 'anthropic' | 'fireflies' | 'hubspotAccess' | 'hubspotService' | 'github';
+export type ScopedSecret = 'anthropic' | 'fireflies' | 'hubspotAccess' | 'hubspotService' | 'github' | 'elevenlabs';
 
 /** Canonical egress host for each external dependency. */
 export const EGRESS_HOSTS: Record<Exclude<ScopedSecret, 'hubspotService'>, string> = {
@@ -22,6 +22,7 @@ export const EGRESS_HOSTS: Record<Exclude<ScopedSecret, 'hubspotService'>, strin
   fireflies: 'api.fireflies.ai',
   hubspotAccess: 'api.hubapi.com',
   github: 'api.github.com',
+  elevenlabs: 'api.elevenlabs.io',
 };
 
 export interface AgentScope {
@@ -49,8 +50,12 @@ const AGENT_SCOPES: Record<AgentName, AgentScope> = {
   // Security + Dev read GitHub repos for Product B scoring.
   security: { secrets: ['anthropic', 'github'], egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.github] },
   dev: { secrets: ['anthropic', 'github'], egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.github] },
-  // Personal assistant answers from our own provenance store; LLM only, no other egress.
-  assistant: ANTHROPIC,
+  // Personal assistant answers from our own provenance store; LLM plus the
+  // voice provider (TTS/STT) — still no data-source or write credentials.
+  assistant: {
+    secrets: ['anthropic', 'elevenlabs'],
+    egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.elevenlabs],
+  },
 };
 
 export class CredentialScopeError extends Error {}
@@ -84,6 +89,7 @@ const SECRET_RESOLVERS: Record<ScopedSecret, () => string | undefined> = {
   hubspotAccess: () => config().hubspot.accessToken,
   hubspotService: () => config().hubspot.serviceKey,
   github: () => config().github.token,
+  elevenlabs: () => config().elevenlabs.apiKey,
 };
 
 /**

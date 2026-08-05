@@ -1,33 +1,42 @@
-import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
+import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
 import { hashToken, verifyToken } from '../console/auth/session.js';
 import { isIpAllowed, parseAllowlist } from '../core/net/ipAllowlist.js';
 import { InMemoryRateLimiter, type RateLimiter } from '../core/triggers/rateLimiter.js';
 import { appendAudit, type AuditEvent } from '../core/audit/writer.js';
 import type { LlmClient } from '../integrations/anthropic/client.js';
+import type { VoiceClient } from '../integrations/elevenlabs/client.js';
 import { askAssistant, QUESTION_MAX } from '../products/meeting/assistant.js';
+import { FREE_TEXT_MAX } from '../core/agents/contract.js';
 import { ASSISTANT_PAGE } from './assistantPage.js';
 
 /**
  * Personal-assistant surface (voice HUD): GET /assistant serves the laptop HUD
- * page; POST /api/assistant/ask answers a question via the assistant agent.
+ * page; POST /api/assistant/ask answers a question via the assistant agent;
+ * /api/assistant/tts and /stt proxy the voice provider (ears + mouth) when one
+ * is configured, so no provider key ever reaches the browser.
  *
  * Defence order, matching the webhook receiver's posture:
  *   1. IP allowlist (deny-by-default, CIDR-capable) — gates the HUD page AND
  *      the API; an empty allowlist means nobody gets in. Behind a proxy/LB the
  *      client IP comes from X-Forwarded-For, so TRUST_PROXY must be set there
  *      for this check to see the real caller.
- *   2. Body size/shape cap (schema, question length bound).
- *   3. Rate limit by IP — a voice UI retriggers easily; bound LLM spend.
+ *   2. Body size/shape cap (schema / audio bodyLimit).
+ *   3. Rate limit by IP — a voice UI retriggers easily; bound provider spend.
  *   4. Constant-time bearer-token check (token configured via env, compared as
  *      hashes with timingSafeEqual — never with ===).
  * Every answered or refused question is appended to the audit chain, so the
  * assistant's read path is as traceable as the pipeline's write path.
  */
 
+/** MediaRecorder chunks are small; cap uploads well above a spoken question. */
+const AUDIO_BODY_LIMIT = 8_000_000; // 8 MB ≈ several minutes of Opus
+
 export interface AssistantRoutesOptions {
   pool: Pool;
   llm: LlmClient;
+  /** Voice provider (TTS+STT). Omit → HUD falls back to browser voice. */
+  voice?: VoiceClient;
   /** Shared secret the HUD presents as `Authorization: Bearer <token>`. */
   accessToken: string;
   /** IPs/CIDRs allowed to reach the assistant at all. Empty = deny everyone. */
@@ -65,9 +74,39 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
       }
     });
 
+    // Raw-buffer parser for recorded question audio (scoped to this plugin).
+    for (const type of ['audio/webm', 'audio/ogg', 'audio/mp4', 'application/octet-stream']) {
+      app.addContentTypeParser(type, { parseAs: 'buffer', bodyLimit: AUDIO_BODY_LIMIT }, (_req, body, done) =>
+        done(null, body),
+      );
+    }
+
+    /** Rate-limit + bearer-token gate shared by all POST endpoints. Sends the error reply itself. */
+    async function authorize(req: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+      const rl = await limiter.consume([`assistant:ip:${req.ip}`], nowMs());
+      if (!rl.allowed) {
+        await reply
+          .code(429)
+          .header('retry-after', Math.ceil((rl.resetAtMs - nowMs()) / 1000))
+          .send({ error: 'rate_limited' });
+        return false;
+      }
+      const auth = String(req.headers.authorization ?? '');
+      const presented = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
+      if (!presented || !verifyToken(presented, tokenHash)) {
+        await reply.code(401).send({ error: 'unauthorized' });
+        return false;
+      }
+      return true;
+    }
+
     app.get('/assistant', async (_req, reply) => {
       return reply.header('content-type', 'text/html; charset=utf-8').send(ASSISTANT_PAGE);
     });
+
+    // Capability probe: lets the HUD decide between provider voice and the
+    // browser fallback. IP-gated like everything else; reveals nothing secret.
+    app.get('/api/assistant/voice', async () => ({ tts: Boolean(opts.voice), stt: Boolean(opts.voice) }));
 
     app.post(
       '/api/assistant/ask',
@@ -82,19 +121,7 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
         },
       },
       async (req, reply) => {
-        const rl = await limiter.consume([`assistant:ip:${req.ip}`], nowMs());
-        if (!rl.allowed) {
-          return reply
-            .code(429)
-            .header('retry-after', Math.ceil((rl.resetAtMs - nowMs()) / 1000))
-            .send({ error: 'rate_limited' });
-        }
-
-        const auth = String(req.headers.authorization ?? '');
-        const presented = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
-        if (!presented || !verifyToken(presented, tokenHash)) {
-          return reply.code(401).send({ error: 'unauthorized' });
-        }
+        if (!(await authorize(req, reply))) return reply;
 
         const { question } = req.body as { question: string };
         const result = await askAssistant({ pool: opts.pool, llm: opts.llm }, question);
@@ -119,6 +146,43 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
         return { answer: result.answer, refused: result.flagged.length > 0 };
       },
     );
+
+    // Mouth: synthesize an answer. Text is length-capped to the same bound as
+    // agent free-text, and the provider key stays server-side.
+    app.post(
+      '/api/assistant/tts',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['text'],
+            additionalProperties: false,
+            properties: { text: { type: 'string', minLength: 1, maxLength: FREE_TEXT_MAX } },
+          },
+        },
+      },
+      async (req, reply) => {
+        if (!opts.voice) return reply.code(501).send({ error: 'voice_not_configured' });
+        if (!(await authorize(req, reply))) return reply;
+        const { text } = req.body as { text: string };
+        const out = await opts.voice.tts(text);
+        return reply.header('content-type', out.mime).send(out.audio);
+      },
+    );
+
+    // Ears: transcribe a recorded question. Raw audio in, plain text out; the
+    // transcript then goes through /ask like any typed question.
+    app.post('/api/assistant/stt', async (req, reply) => {
+      if (!opts.voice) return reply.code(501).send({ error: 'voice_not_configured' });
+      if (!(await authorize(req, reply))) return reply;
+      const audio = req.body as Buffer | undefined;
+      if (!audio || !Buffer.isBuffer(audio) || audio.length === 0) {
+        return reply.code(400).send({ error: 'empty_audio' });
+      }
+      const mime = String(req.headers['content-type'] ?? 'audio/webm').split(';')[0]!;
+      const text = await opts.voice.stt(audio, mime);
+      return { text };
+    });
   };
 
   return plugin;

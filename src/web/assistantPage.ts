@@ -118,18 +118,55 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     return div;
   }
 
-  function speak(text) {
-    if (!speakBox.checked || !('speechSynthesis' in window)) return;
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = langSel.value;
-    const voice = speechSynthesis.getVoices().find(v => v.lang === langSel.value)
-      || speechSynthesis.getVoices().find(v => v.lang.startsWith(langSel.value.slice(0, 2)));
-    if (voice) u.voice = voice;
-    // Pause the ears while the mouth is talking, or it hears itself.
+  // Server voice capabilities (ElevenLabs behind our API). Falls back to the
+  // browser's built-in voice when the provider isn't configured.
+  const caps = { tts: false, stt: false };
+  fetch('/api/assistant/voice').then(r => r.ok ? r.json() : null).then(c => {
+    if (c) { caps.tts = !!c.tts; caps.stt = !!c.stt; }
+  }).catch(() => {});
+
+  function speakBrowser(text) {
+    return new Promise((resolve) => {
+      if (!('speechSynthesis' in window)) return resolve();
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = langSel.value;
+      const voice = speechSynthesis.getVoices().find(v => v.lang === langSel.value)
+        || speechSynthesis.getVoices().find(v => v.lang.startsWith(langSel.value.slice(0, 2)));
+      if (voice) u.voice = voice;
+      u.onend = u.onerror = resolve;
+      speechSynthesis.speak(u);
+    });
+  }
+
+  async function speakProvider(text) {
+    const res = await fetch('/api/assistant/tts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + getToken(false) },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error('tts ' + res.status);
+    const url = URL.createObjectURL(await res.blob());
+    await new Promise((resolve) => {
+      const a = new Audio(url);
+      a.onended = a.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+      a.play().catch(() => resolve());
+    });
+  }
+
+  // Resolves when playback finishes. Pauses the ears while the mouth is
+  // talking, or it hears itself.
+  async function speak(text) {
+    if (!speakBox.checked) return;
     pauseListening();
-    u.onend = u.onerror = () => resumeListening();
-    speechSynthesis.speak(u);
+    try {
+      if (caps.tts) await speakProvider(text);
+      else await speakBrowser(text);
+    } catch {
+      await speakBrowser(text); // provider hiccup → still say it
+    } finally {
+      resumeListening();
+    }
   }
 
   async function ask(question) {
@@ -167,7 +204,9 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
   document.getElementById('send').onclick = () => ask(input.value);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(input.value); });
 
-  // ---- Ears: Web Speech API (Chromium). Falls back to typing elsewhere. ----
+  // ---- Ears ----
+  // Two tiers: recorded audio → our server → ElevenLabs STT (when configured),
+  // with the browser's Web Speech API for wake-phrase spotting and as fallback.
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const wakeBox = document.getElementById('wake');
   const wakeInput = document.getElementById('wakePhrase');
@@ -176,10 +215,93 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
   let pauseListening = () => {};
   let resumeListening = () => {};
 
+  // Record one spoken question and transcribe it server-side. Auto-stops after
+  // ~1.3s of silence once speech has started (or 15s hard cap). Returns the
+  // transcript, or null on failure/empty.
+  let activeRecording = null; // () => void — stops the in-flight recording
+  async function recordQuestion() {
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      add('sys', 'Microphone access denied.');
+      return null;
+    }
+    const mime = window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
+    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const buf = new Uint8Array(analyser.fftSize);
+
+    micBtn.classList.add('listening'); dot.classList.add('live');
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return; stopped = true;
+      activeRecording = null;
+      try { recorder.stop(); } catch {}
+      stream.getTracks().forEach(t => t.stop());
+      ctx.close().catch(() => {});
+      micBtn.classList.remove('listening'); dot.classList.remove('live');
+    };
+    activeRecording = stop;
+
+    const started = performance.now();
+    let spokeAt = 0, silentAt = 0;
+    (function tick() {
+      if (stopped) return;
+      analyser.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) { const d = (buf[i] - 128) / 128; sum += d * d; }
+      const rms = Math.sqrt(sum / buf.length);
+      const now = performance.now();
+      if (rms > 0.02) { spokeAt = spokeAt || now; silentAt = 0; }
+      else if (spokeAt) { silentAt = silentAt || now; if (now - silentAt > 1300) return stop(); }
+      if (now - started > 15000) return stop();
+      requestAnimationFrame(tick);
+    })();
+
+    await new Promise((resolve) => { recorder.onstop = resolve; recorder.start(); });
+    stop();
+    if (!chunks.length) return null;
+    const blob = new Blob(chunks, { type: (recorder.mimeType || 'audio/webm').split(';')[0] });
+    try {
+      const res = await fetch('/api/assistant/stt', {
+        method: 'POST',
+        headers: { 'content-type': blob.type || 'audio/webm', authorization: 'Bearer ' + getToken(false) },
+        body: blob,
+      });
+      if (!res.ok) { add('sys', 'Transcription failed (' + res.status + ').'); return null; }
+      const data = await res.json();
+      return (data.text || '').trim() || null;
+    } catch (err) {
+      add('sys', 'Transcription error: ' + err);
+      return null;
+    }
+  }
+
+  async function captureAndAsk() {
+    pauseListening();
+    try {
+      const text = await recordQuestion();
+      if (text) { input.value = text; await ask(text); }
+    } finally {
+      resumeListening();
+    }
+  }
+
   if (!SR) {
-    micBtn.classList.add('hidden');
+    // No Web Speech API (non-Chromium): wake word needs it, but push-to-talk
+    // still works through the server's ears when configured.
     document.getElementById('wakeWrap').classList.add('hidden');
-    add('sys', 'Speech recognition is not available in this browser — type your questions instead.');
+    micBtn.onclick = () => {
+      if (!caps.stt) { add('sys', 'Speech recognition is not available in this browser — type your questions instead.'); return; }
+      if (activeRecording) activeRecording(); else captureAndAsk();
+    };
   } else {
     const savedWake = localStorage.getItem('assistant_wake_phrase');
     if (savedWake) wakeInput.value = savedWake;
@@ -188,6 +310,12 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     // --- Push-to-talk (mic button): one utterance = one question. ---
     let rec = null;
     micBtn.onclick = () => {
+      // Provider ears configured → record + server-side transcription.
+      if (caps.stt) {
+        if (activeRecording) { activeRecording(); return; } // click again = stop early
+        captureAndAsk();
+        return;
+      }
       if (rec) { rec.stop(); return; }
       stopWakeLoop(); // the two modes share the one microphone
       rec = new SR();
@@ -227,6 +355,13 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
         const after = heard.slice(at + phrase.length).trim();
         if (after.length > 2) {
           ask(after);
+        } else if (caps.stt) {
+          // Provider ears: acknowledge, then record the question properly.
+          add('sys', 'Listening… ask your question.');
+          (async () => {
+            await speak(langSel.value.startsWith('hr') ? 'Da?' : 'Yes?');
+            await captureAndAsk();
+          })();
         } else {
           awaitingQuestion = true;
           add('sys', 'Listening… ask your question.');
