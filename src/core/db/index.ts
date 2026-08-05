@@ -19,6 +19,27 @@ let pool: Pool | undefined;
  *    Platform traffic stays on DO's private network, but set DATABASE_CA_CERT
  *    to close the MITM gap.
  */
+/**
+ * Strip TLS-related query params (sslmode & friends) from a connection string.
+ * node-postgres merges the parsed connection string OVER the explicit config
+ * (`Object.assign({}, config, parse(connectionString))`), so a DO-style
+ * `?sslmode=require` silently clobbers our `ssl` option — and pg ≥8.22 treats
+ * `require` as verify-full, which the DO CA fails. Removing the params makes
+ * sslConfig() the single source of truth. Non-URL (key=value) strings are
+ * returned untouched.
+ */
+export function stripSslParams(connectionString: string): string {
+  try {
+    const url = new URL(connectionString);
+    for (const p of ['ssl', 'sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'sslpassword', 'sslnegotiation', 'uselibpqcompat']) {
+      url.searchParams.delete(p);
+    }
+    return url.toString();
+  } catch {
+    return connectionString;
+  }
+}
+
 export function sslConfig(ssl: boolean, caCert?: string): PoolConfig['ssl'] {
   if (!ssl) return false;
   if (!caCert) return { rejectUnauthorized: false };
@@ -32,7 +53,7 @@ export function getPool(): Pool {
   if (!pool) {
     const cfg = config();
     const poolConfig: PoolConfig = {
-      connectionString: cfg.db.url,
+      connectionString: stripSslParams(cfg.db.url),
       ssl: sslConfig(cfg.db.ssl, cfg.db.caCert),
       // Per-instance cap. Across N web + M worker instances the total must stay
       // under the Postgres max_connections — front the DB with PgBouncer
