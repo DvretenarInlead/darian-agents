@@ -12,7 +12,9 @@ the rest are committed designs scheduled in later build-order steps.
   `===` on HMACs.
 - **Payload size + rate limits** at the receiver, before the worker.
 - **TLS verification pinned** on all outbound calls; reject invalid/downgraded
-  certs. (DB pool already sets `rejectUnauthorized: true` when SSL is on.) **(foundation)**
+  certs. (DB TLS: set `DATABASE_CA_CERT` to the managed cluster's CA for full
+  verification; without it the connection is encrypted but unverified —
+  acceptable only on the provider's private network.) **(foundation)**
 
 ## 2. Console auth (roll-your-own)
 - **MFA / TOTP** required for all privileged accounts (`users.mfa_secret_enc`,
