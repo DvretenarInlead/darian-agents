@@ -11,6 +11,7 @@ import { reconcileItems } from './reconcile.js';
 import { runBoard, type BoardRunner, type BoardSubject } from './board.js';
 import { isEngaged } from '../../console/killswitch.js';
 import { escalations as escalationsMetric, syncOutcomes } from '../../core/obs/metrics.js';
+import { applyTaskRules, defaultSyncRules, projectName, type SyncRules } from './rules.js';
 
 /**
  * Product A pipeline (build-order step 6): extraction → reconciliation → batched
@@ -28,6 +29,8 @@ export interface MeetingPipelineDeps {
   board: { runner: BoardRunner; policy: ResolutionPolicyEntry[]; agents?: BoardAgent[] };
   hubspot: HubSpotClient;
   projectDefaults: { pipeline: string; pipelineStage: string; type?: string };
+  /** Console-configured sync rules (naming/field mapping); defaults otherwise. */
+  rules?: SyncRules;
   /** ISO-8601 clock for audit timestamps (injected for testability). */
   now: () => string;
 }
@@ -62,6 +65,7 @@ async function findSyncedProject(pool: Pool, meetingId: string): Promise<string 
 export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessInput): Promise<ProcessSummary> {
   const { pool, now } = deps;
   const apply = input.apply ?? true;
+  const rules = deps.rules ?? defaultSyncRules(deps.projectDefaults);
 
   const items = await deps.extractor.extract({ meetingId: input.meetingId, transcript: input.transcript });
   const reconciled = await reconcileItems(pool, input.meetingId, items);
@@ -98,11 +102,13 @@ export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessIn
     if (!decision) continue;
     auditEvents.push({ eventType: 'verdict', product: 'meeting', actorId: null, subjectId: r.itemHash, payload: { decision } });
     if (decision.outcome === 'proceed') {
-      const task: TaskInput = {
+      const rawTask: TaskInput = {
         title: r.item.title,
         ...(r.item.description ? { body: r.item.description } : {}),
         ...(r.item.due_hint ? { dueDate: r.item.due_hint } : {}),
       };
+      // Console-configured field mapping: prefix, meeting context, default due.
+      const task = applyTaskRules(rawTask, rules, input.meetingId, now());
       approvedItems.push({ task, decision: r.decision });
     } else {
       escalationRows.push({ subjectId: r.itemHash, reason: decision.rationale, decision });
@@ -135,10 +141,10 @@ export async function processMeeting(deps: MeetingPipelineDeps, input: ProcessIn
   if (approvedItems.length > 0) {
     const existingProjectId = await findSyncedProject(pool, input.meetingId);
     const project: ProjectInput = {
-      name: `Meeting ${input.meetingId} — action items`,
-      pipeline: deps.projectDefaults.pipeline,
-      pipelineStage: deps.projectDefaults.pipelineStage,
-      ...(deps.projectDefaults.type ? { type: deps.projectDefaults.type } : {}),
+      name: projectName(rules, input.meetingId),
+      pipeline: rules.project.pipeline,
+      pipelineStage: rules.project.pipelineStage,
+      ...(rules.project.type ? { type: rules.project.type } : {}),
     };
     const plan = buildSyncPlan({
       subjectId: input.meetingId,

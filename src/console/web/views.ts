@@ -45,6 +45,7 @@ const NAV = [
   { href: '/console', label: 'Dashboard', perm: null },
   { href: '/console/escalations', label: 'Escalations', perm: 'escalation:approve' },
   { href: '/console/agents', label: 'Agents', perm: 'agents:edit' },
+  { href: '/console/skills', label: 'Skills', perm: 'agents:edit' },
   { href: '/console/triggers', label: 'Triggers', perm: 'triggers:edit' },
   { href: '/console/audit', label: 'Audit', perm: 'audit:read' },
   { href: '/console/security', label: 'Security', perm: 'users:manage' },

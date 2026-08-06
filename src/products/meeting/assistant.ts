@@ -62,6 +62,12 @@ export interface AssistantDeps {
   frozen?: () => Promise<boolean>;
   /** ISO clock for task comments; injected for tests. */
   nowIso?: () => string;
+  /**
+   * Console-editable skill block (agent_configs row 'assistant') appended to
+   * the system prompt — how the assistant prepares lists/tasks is operator
+   * policy, not code. Sanitized and capped before use.
+   */
+  skillPrompt?: string;
 }
 
 export interface AssistantAnswer {
@@ -89,13 +95,6 @@ const SYSTEM_PROMPT = [
   'comment_on_task ONLY when the user explicitly asks you to create or comment, never on your own',
   'initiative, and state in your answer exactly what you created or commented. create_task creates a',
   'real HubSpot task directly — never claim syncing needs extra configuration.',
-  'ACTION-ITEM SKILL: when the principal asks you to prepare a to-do list, action items, or tasks from',
-  'a meeting, do the analysis YOURSELF: read the transcript, extract the concrete follow-ups (owner-able',
-  'actions, decisions needing execution, promised deliverables — infer sensible ones from the discussion',
-  'when they are implied rather than dictated), and reply with a short numbered list of proposed task',
-  'titles. Do NOT ask the principal to dictate items you can derive. Then ask one question only:',
-  'whether to create them. On their confirmation, create each with create_task (put meeting context in',
-  'notes) and confirm exactly what was created.',
   'Answers are read aloud: keep them to a sentence or two, conversational, and free of markup, bullet',
   'lists, or raw IDs (say "synced to HubSpot" rather than reading object references).',
   'Reply in the language the question was asked in.',
@@ -321,8 +320,9 @@ export async function askAssistant(
     },
   ];
 
+  const skill = deps.skillPrompt ? sanitize(deps.skillPrompt, { maxLength: FREE_TEXT_MAX }).trim() : '';
   const baseReq = {
-    system: SYSTEM_PROMPT,
+    system: skill ? `${SYSTEM_PROMPT} ${skill}` : SYSTEM_PROMPT,
     // Tool answers may carry a proposed task list; still bounded for TTS.
     maxTokens: 900,
     ...(deps.model ? { model: deps.model } : {}),
