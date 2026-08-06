@@ -42,6 +42,8 @@ services:
       - { key: HUBSPOT_ACCESS_TOKEN, scope: RUN_TIME, type: SECRET }
       - { key: HUBSPOT_SERVICE_KEY, scope: RUN_TIME, type: SECRET }
       - { key: HUBSPOT_PROJECTS_API_VERSION, value: "2026-03" }
+      # Route assistant/MCP task tools through HubSpot's official MCP server subprocess.
+      - { key: HUBSPOT_USE_MCP, value: "true" }
       - { key: GITHUB_TOKEN, scope: RUN_TIME, type: SECRET }
       # Personal-assistant HUD (/assistant): shared bearer secret + IP allowlist.
       - { key: ASSISTANT_ACCESS_TOKEN, scope: RUN_TIME, type: SECRET }
