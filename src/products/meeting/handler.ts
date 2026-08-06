@@ -23,6 +23,8 @@ export interface MeetingHandlerDeps {
   llm: LlmClient;
   hubspot: HubSpotClient;
   projectDefaults: { pipeline: string; pipelineStage: string; type?: string };
+  /** Best-effort owner ping after a run (Slack). Failure never fails the job. */
+  notify?: (text: string) => Promise<void>;
 }
 
 /** Best-effort extraction of the meeting id from a Fireflies webhook body. */
@@ -54,5 +56,22 @@ export function makeMeetingHandler(deps: MeetingHandlerDeps): JobHandler {
       { meetingId, transcript, apply: true },
     );
     log().info({ jobId: job.id, ...summary }, 'meeting_ingest processed');
+
+    // Owner ping: only when something actually happened, and never fatal —
+    // the audit log is the source of truth, Slack is a courtesy.
+    if (deps.notify && (summary.proceeded > 0 || summary.escalated > 0 || summary.quarantined > 0)) {
+      const parts = [
+        `Meeting ${meetingId} processed:`,
+        `${summary.extracted} item(s) extracted`,
+        summary.proceeded > 0 ? `${summary.proceeded} task(s) ${summary.synced ? 'synced to HubSpot' : 'approved (sync previewed)'}` : null,
+        summary.escalated > 0 ? `${summary.escalated} awaiting your approval in the console (/console/escalations)` : null,
+        summary.quarantined > 0 ? `${summary.quarantined} quarantined for review` : null,
+      ].filter(Boolean);
+      try {
+        await deps.notify(parts.join(' — '));
+      } catch (err) {
+        log().warn({ jobId: job.id, err: String(err) }, 'owner notification failed (non-fatal)');
+      }
+    }
   };
 }

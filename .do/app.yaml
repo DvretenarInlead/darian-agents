@@ -52,7 +52,10 @@ services:
       - { key: ELEVENLABS_API_KEY, scope: RUN_TIME, type: SECRET }
       # Platform MCP server (/mcp) shared secret; optional — route not mounted without it.
       - { key: MCP_ACCESS_TOKEN, scope: RUN_TIME, type: SECRET }
-      - { key: EGRESS_ALLOWLIST, value: "api.anthropic.com,api.fireflies.ai,api.hubapi.com,api.github.com,api.elevenlabs.io" }
+      # Slack pings (bot token + channel); optional — notifier inactive without both.
+      - { key: SLACK_BOT_TOKEN, scope: RUN_TIME, type: SECRET }
+      - { key: SLACK_CHANNEL_ID, scope: RUN_TIME, type: SECRET }
+      - { key: EGRESS_ALLOWLIST, value: "api.anthropic.com,api.fireflies.ai,api.hubapi.com,api.github.com,api.elevenlabs.io,slack.com" }
       - { key: AUDIT_SHIP_ENDPOINT, scope: RUN_TIME, type: SECRET }
       - { key: AUDIT_SHIP_TOKEN, scope: RUN_TIME, type: SECRET }
 

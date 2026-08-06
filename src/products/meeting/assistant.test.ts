@@ -289,3 +289,67 @@ describe('askAssistant — meeting tool loop', () => {
     expect(result.toolCalls).toEqual([]);
   });
 });
+
+describe('askAssistant — HubSpot task tools', () => {
+  class OneShotToolLlm {
+    private step = 0;
+    readonly requests: import('../../integrations/anthropic/client.js').LlmRequest[] = [];
+    constructor(private readonly turns: import('../../integrations/anthropic/client.js').LlmTurn[]) {}
+    async complete(): Promise<string> {
+      throw new Error('tool path should use completeTurn');
+    }
+    async completeTurn(req: import('../../integrations/anthropic/client.js').LlmRequest) {
+      this.requests.push({ ...req, messages: [...req.messages] });
+      return this.turns[Math.min(this.step++, this.turns.length - 1)]!;
+    }
+  }
+
+  it('creates a task by voice command and reports it', async () => {
+    const { InMemoryTaskOps } = await import('../../integrations/hubspot/client.js');
+    const taskOps = new InMemoryTaskOps();
+    const llm = new OneShotToolLlm([
+      {
+        stopReason: 'tool_use',
+        content: [{ type: 'tool_use', id: 't1', name: 'create_task', input: { title: 'Send proposal to client X' } }],
+      },
+      { stopReason: 'end_turn', content: [{ type: 'text', text: 'Done — I created the task.' }] },
+    ]);
+
+    const result = await askAssistant(
+      { pool: stubPool([]), llm, taskOps, frozen: async () => false },
+      'create a task: send proposal to client X',
+    );
+
+    expect(result.answer).toBe('Done — I created the task.');
+    expect(taskOps.tasks).toHaveLength(1);
+    expect(taskOps.tasks[0]!.title).toBe('Send proposal to client X');
+    expect(result.toolCalls.map((c) => c.name)).toEqual(['create_task']);
+    // Only task tools offered (no fireflies configured).
+    expect(llm.requests[0]!.tools?.map((t) => t.name)).toEqual(['list_tasks', 'create_task', 'comment_on_task']);
+  });
+
+  it('blocks task writes while the kill-switch is engaged', async () => {
+    const { InMemoryTaskOps } = await import('../../integrations/hubspot/client.js');
+    const taskOps = new InMemoryTaskOps();
+    const llm = new OneShotToolLlm([
+      {
+        stopReason: 'tool_use',
+        content: [{ type: 'tool_use', id: 't1', name: 'create_task', input: { title: 'should not exist' } }],
+      },
+      { stopReason: 'end_turn', content: [{ type: 'text', text: 'Writes are frozen right now.' }] },
+    ]);
+
+    const result = await askAssistant(
+      { pool: stubPool([]), llm, taskOps, frozen: async () => true },
+      'create a task: should not exist',
+    );
+
+    expect(taskOps.tasks).toHaveLength(0);
+    expect(result.answer).toBe('Writes are frozen right now.');
+    const second = llm.requests[1]!;
+    const lastMsg = second.messages[second.messages.length - 1]!;
+    const block = (lastMsg.content as { is_error?: boolean; content: string }[])[0]!;
+    expect(block.is_error).toBe(true);
+    expect(block.content).toMatch(/kill-switch/);
+  });
+});

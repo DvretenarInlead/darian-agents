@@ -132,6 +132,7 @@ export function createMcpRoutes(opts: McpRoutesOptions): FastifyPluginAsync {
             llm: opts.llm,
             ...(opts.model ? { model: opts.model } : {}),
             ...(opts.fireflies ? { fireflies: opts.fireflies } : {}),
+            ...(opts.taskOps ? { taskOps: opts.taskOps } : {}),
           },
           question,
         );

@@ -8,6 +8,7 @@ import { AnthropicLlmClient } from './integrations/anthropic/client.js';
 import { GraphqlFirefliesClient } from './integrations/fireflies/client.js';
 import { createHubSpotClient } from './integrations/hubspot/index.js';
 import { makeMeetingHandler } from './products/meeting/handler.js';
+import { createNotifier } from './integrations/slack/client.js';
 import { pollFireflies } from './products/meeting/poll.js';
 import { makeRepoHandler } from './products/repo/handler.js';
 import { withCronLock } from './core/triggers/cronLock.js';
@@ -32,11 +33,13 @@ async function start(): Promise<void> {
 
   const llm = new AnthropicLlmClient();
   const fireflies = new GraphqlFirefliesClient();
+  const notifier = createNotifier(); // Slack pings; null when not configured
   const handlers: Record<string, JobHandler> = {
     meeting_ingest: withCorrelation(
       makeMeetingHandler({
         pool,
         fireflies,
+        ...(notifier ? { notify: (text: string) => notifier.notify(text) } : {}),
         llm,
         hubspot: createHubSpotClient(),
         projectDefaults: {
