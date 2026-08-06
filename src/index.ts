@@ -6,6 +6,8 @@ import { meetingIdFromPayload } from './products/meeting/handler.js';
 import { createAssistantRoutes } from './web/assistant.js';
 import { createMcpRoutes } from './web/mcp.js';
 import { ProjectsApiHubSpotClient } from './integrations/hubspot/projectsApi.js';
+import { HubSpotMcpTaskOps } from './integrations/hubspot/mcpTaskOps.js';
+import type { HubSpotTaskOps } from './integrations/hubspot/client.js';
 import { GraphqlFirefliesClient } from './integrations/fireflies/client.js';
 import { loadAssistantSkill } from './products/meeting/prompts.js';
 import { AnthropicLlmClient } from './integrations/anthropic/client.js';
@@ -30,6 +32,15 @@ export function buildServer() {
 
   // Console-editable assistant skill (agent_configs row 'assistant'), cached
   // briefly so every voice question doesn't cost a DB read.
+  // Task tools implementation: HubSpot's official MCP server subprocess when
+  // HUBSPOT_USE_MCP=true, else the direct version-pinned Projects API adapter.
+  // Shared by the assistant HUD and the platform MCP server.
+  const taskOps: HubSpotTaskOps | undefined = cfg.hubspot.accessToken
+    ? cfg.hubspot.useMcp
+      ? new HubSpotMcpTaskOps()
+      : new ProjectsApiHubSpotClient()
+    : undefined;
+
   let skillCache: { at: number; text: string } | null = null;
   const loadSkill = async (): Promise<string> => {
     if (skillCache && Date.now() - skillCache.at < 30_000) return skillCache.text;
@@ -142,7 +153,7 @@ export function buildServer() {
         // Meeting-lookup tools (read-only, scoped to the assistant agent).
         ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
         // HubSpot task tools for voice commands (kill-switch gated writes).
-        ...(cfg.hubspot.accessToken ? { taskOps: new ProjectsApiHubSpotClient() } : {}),
+        ...(taskOps ? { taskOps } : {}),
         loadSkill,
       }),
     );
@@ -159,7 +170,7 @@ export function buildServer() {
         llm: new AnthropicLlmClient(),
         model: cfg.anthropic.assistantModel,
         accessToken: cfg.mcp.accessToken,
-        ...(cfg.hubspot.accessToken ? { taskOps: new ProjectsApiHubSpotClient() } : {}),
+        ...(taskOps ? { taskOps } : {}),
         ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
         loadSkill,
       }),

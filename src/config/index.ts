@@ -47,6 +47,8 @@ const envSchema = z.object({
   HUBSPOT_ACCESS_TOKEN: z.string().optional(),
   HUBSPOT_SERVICE_KEY: z.string().optional(),
   HUBSPOT_PROJECTS_API_VERSION: z.string().default('2026-03'),
+  /** Route assistant/MCP task tools through HubSpot's official MCP server subprocess. */
+  HUBSPOT_USE_MCP: boolish.default('false'),
 
   GITHUB_TOKEN: z.string().optional(),
 
@@ -90,7 +92,7 @@ export interface Config {
   envelope: { masterKey: string | undefined; keyVersion: number };
   anthropic: { apiKey: string | undefined; defaultModel: string; assistantModel: string };
   fireflies: { apiKey: string | undefined; webhookSecret: string | undefined; timestampToleranceSec: number; pollMinutes: number };
-  hubspot: { accessToken: string | undefined; serviceKey: string | undefined; projectsApiVersion: string };
+  hubspot: { accessToken: string | undefined; serviceKey: string | undefined; projectsApiVersion: string; useMcp: boolean };
   github: { token: string | undefined };
   assistant: { accessToken: string | undefined; allowedIps: string[] };
   mcp: { accessToken: string | undefined };
@@ -120,6 +122,7 @@ function build(raw: RawEnv): Config {
       accessToken: raw.HUBSPOT_ACCESS_TOKEN,
       serviceKey: raw.HUBSPOT_SERVICE_KEY,
       projectsApiVersion: raw.HUBSPOT_PROJECTS_API_VERSION,
+      useMcp: raw.HUBSPOT_USE_MCP,
     },
     github: { token: raw.GITHUB_TOKEN },
     assistant: { accessToken: raw.ASSISTANT_ACCESS_TOKEN, allowedIps: csv(raw.ASSISTANT_ALLOWED_IPS) },
