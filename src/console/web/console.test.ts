@@ -18,6 +18,9 @@ class FakeUsers implements UsersRepo {
   async recordLoginSuccess() {}
   async getRoles() { return this.roles; }
   async list() { return this.user ? [{ id: this.user.id, email: this.user.email, status: this.user.status, mfaEnabled: this.user.mfaEnabled }] : []; }
+  async setMfa(_id: string, secretEnc: Buffer | null, enabled: boolean) {
+    if (this.user) { this.user.mfaSecretEnc = secretEnc; this.user.mfaEnabled = enabled; }
+  }
 }
 
 class FakeSessions implements SessionsRepo {

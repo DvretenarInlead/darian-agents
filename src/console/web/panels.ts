@@ -10,6 +10,9 @@ import { getAgentScope } from '../../core/governance/credentials.js';
 import { config } from '../../config/index.js';
 import { DEFAULT_AGENT_PROMPTS, DEFAULT_ASSISTANT_SKILL } from '../../products/meeting/prompts.js';
 import { SyncRules, SETTINGS_KEY, loadSyncRules } from '../../products/meeting/rules.js';
+import { randomBytes } from 'node:crypto';
+import { generateTotpSecret, otpauthUri, verifyTotp } from '../auth/totp.js';
+import { encrypt, decrypt } from '../../core/crypto/envelope.js';
 
 function navUser(u: CurrentUser): NavUser {
   return { email: u.email, permissions: u.permissions };
@@ -276,6 +279,83 @@ function registerTriggerRoutes(app: FastifyInstance, deps: ConsoleDeps, guard: G
       deps.now().toISOString(),
     );
     return reply.redirect('/console/skills');
+  });
+
+  // MFA (TOTP) self-enrollment — any signed-in user secures their own account.
+  // The seed is shown once at enrollment, then stored only envelope-encrypted.
+  app.get('/console/mfa', async (req, reply) => {
+    const user = await guard(req, reply, deps);
+    if (!user) return;
+    const csrf = ensureCsrf(req, reply, deps);
+    const record = await deps.users.findById(user.id);
+
+    if (record?.mfaEnabled) {
+      const body = `<h1>Two-factor authentication</h1>
+        <div class="card" style="max-width:560px"><p>MFA is <strong>enabled</strong> for ${esc(user.email)}.</p>
+        <form method="post" action="/console/mfa/disable">${csrfField(csrf)}
+          <label>Current authenticator code</label><input name="totp" inputmode="numeric" autocomplete="one-time-code">
+          <p><button class="danger">Disable MFA</button></p>
+        </form></div>`;
+      return reply.type('text/html').send(layout({ title: 'MFA', user: navUser(user), body }));
+    }
+
+    if (!deps.keyring) {
+      const body = `<h1>Two-factor authentication</h1>
+        <div class="card" style="max-width:560px"><p class="muted">ENVELOPE_MASTER_KEY is not configured, so MFA seeds cannot be stored encrypted. Set it (32 bytes base64) and redeploy, then return here.</p></div>`;
+      return reply.type('text/html').send(layout({ title: 'MFA', user: navUser(user), body }));
+    }
+
+    const secret = generateTotpSecret(randomBytes);
+    const uri = otpauthUri(secret, user.email);
+    const body = `<h1>Two-factor authentication</h1>
+      <div class="card" style="max-width:560px">
+      <p>1. In your authenticator app (Google Authenticator, 1Password, Authy…) choose <em>add account → enter key manually</em> and paste:</p>
+      <p><code style="font-size:1.05rem;letter-spacing:.08em">${esc(secret)}</code></p>
+      <p class="muted">Or open this link on a device with the app installed: <a href="${esc(uri)}">${esc(uri)}</a></p>
+      <p>2. Enter the 6-digit code the app shows to confirm:</p>
+      <form method="post" action="/console/mfa/enable">${csrfField(csrf)}
+        <input type="hidden" name="secret" value="${esc(secret)}">
+        <label>Code</label><input name="totp" inputmode="numeric" autocomplete="one-time-code">
+        <p><button>Enable MFA</button></p>
+      </form></div>`;
+    return reply.type('text/html').send(layout({ title: 'MFA', user: navUser(user), body }));
+  });
+
+  app.post('/console/mfa/enable', async (req, reply) => {
+    const user = await guard(req, reply, deps);
+    if (!user) return;
+    if (!csrfOk(req)) return reply.code(403).send('invalid form token');
+    if (needsSudo(reply, user, '/console/mfa')) return;
+    if (!deps.keyring) return reply.redirect('/console/mfa');
+    const { secret, totp: code } = (req.body ?? {}) as { secret?: string; totp?: string };
+    const nowSec = Math.floor(deps.now().getTime() / 1000);
+    if (!secret || !/^[A-Z2-7]{16,64}$/.test(secret) || !verifyTotp(code ?? '', secret, nowSec)) {
+      return reply.type('text/html').send(
+        layout({ title: 'MFA', user: navUser(user), flash: { kind: 'err', msg: 'Code did not match — scan/enter the key again.' }, body: '<p><a href="/console/mfa">Try again</a></p>' }),
+      );
+    }
+    await deps.users.setMfa(user.id, encrypt(secret, deps.keyring), true);
+    await appendAudit(deps.pool, { eventType: 'auth_event', product: 'console', actorId: user.id, subjectId: user.id, payload: { mfa: 'enabled' } }, deps.now().toISOString());
+    return reply.redirect('/console/mfa');
+  });
+
+  app.post('/console/mfa/disable', async (req, reply) => {
+    const user = await guard(req, reply, deps);
+    if (!user) return;
+    if (!csrfOk(req)) return reply.code(403).send('invalid form token');
+    if (needsSudo(reply, user, '/console/mfa')) return;
+    const record = await deps.users.findById(user.id);
+    const nowSec = Math.floor(deps.now().getTime() / 1000);
+    const { totp: code } = (req.body ?? {}) as { totp?: string };
+    const stored = record?.mfaSecretEnc && deps.keyring ? decrypt(record.mfaSecretEnc, deps.keyring).toString('utf8') : '';
+    if (!stored || !verifyTotp(code ?? '', stored, nowSec)) {
+      return reply.type('text/html').send(
+        layout({ title: 'MFA', user: navUser(user), flash: { kind: 'err', msg: 'Current code required to disable MFA.' }, body: '<p><a href="/console/mfa">Back</a></p>' }),
+      );
+    }
+    await deps.users.setMfa(user.id, null, false);
+    await appendAudit(deps.pool, { eventType: 'auth_event', product: 'console', actorId: user.id, subjectId: user.id, payload: { mfa: 'disabled' } }, deps.now().toISOString());
+    return reply.redirect('/console/mfa');
   });
 
   app.get('/console/triggers', async (req, reply) => {

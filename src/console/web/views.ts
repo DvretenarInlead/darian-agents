@@ -49,6 +49,7 @@ const NAV = [
   { href: '/console/triggers', label: 'Triggers', perm: 'triggers:edit' },
   { href: '/console/audit', label: 'Audit', perm: 'audit:read' },
   { href: '/console/security', label: 'Security', perm: 'users:manage' },
+  { href: '/console/mfa', label: 'MFA', perm: null },
 ] as const;
 
 export function layout(opts: { title: string; user?: NavUser; flash?: { kind: 'ok' | 'err'; msg: string }; body: string }): string {

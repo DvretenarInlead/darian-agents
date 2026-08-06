@@ -24,6 +24,8 @@ export interface UsersRepo {
   recordLoginSuccess(id: string): Promise<void>;
   getRoles(userId: string): Promise<Role[]>;
   list(): Promise<Array<{ id: string; email: string; status: string; mfaEnabled: boolean }>>;
+  /** Enable (with envelope-encrypted seed) or disable MFA for a user. */
+  setMfa(userId: string, secretEnc: Buffer | null, enabled: boolean): Promise<void>;
 }
 
 export interface SessionRecord {
@@ -86,6 +88,13 @@ export class PgUsersRepo implements UsersRepo {
   async list(): Promise<Array<{ id: string; email: string; status: string; mfaEnabled: boolean }>> {
     const { rows } = await this.pool.query('SELECT id, email, status, mfa_enabled FROM users ORDER BY email');
     return rows.map((r) => ({ id: r.id, email: r.email, status: r.status, mfaEnabled: r.mfa_enabled }));
+  }
+  async setMfa(userId: string, secretEnc: Buffer | null, enabled: boolean): Promise<void> {
+    await this.pool.query('UPDATE users SET mfa_secret_enc = $2, mfa_enabled = $3, updated_at = now() WHERE id = $1', [
+      userId,
+      secretEnc,
+      enabled,
+    ]);
   }
 }
 

@@ -29,6 +29,34 @@ export function base32Decode(input: string): Buffer {
   return Buffer.from(out);
 }
 
+/** Encode bytes as RFC 4648 base32 (authenticator-app secret format). */
+export function base32Encode(input: Buffer): string {
+  let bits = 0;
+  let value = 0;
+  let out = '';
+  for (const byte of input) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out += BASE32_ALPHABET[(value >>> bits) & 31];
+    }
+  }
+  if (bits > 0) out += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  return out;
+}
+
+/** Fresh 160-bit TOTP secret in base32 (the standard enrollment size). */
+export function generateTotpSecret(randomBytesImpl: (n: number) => Buffer): string {
+  return base32Encode(randomBytesImpl(20));
+}
+
+/** otpauth:// URI for authenticator apps (manual entry also works with the raw secret). */
+export function otpauthUri(secretBase32: string, accountEmail: string, issuer = 'darian-agents'): string {
+  const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(accountEmail)}`;
+  return `otpauth://totp/${label}?secret=${secretBase32}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+}
+
 export interface TotpOptions {
   stepSec?: number;
   digits?: number;
