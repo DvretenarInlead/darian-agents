@@ -25,3 +25,27 @@ export async function loadAgentPrompts(pool: Pool): Promise<(agent: BoardAgent) 
 
 export { DEFAULTS as DEFAULT_AGENT_PROMPTS };
 export const ALL_BOARD_AGENTS = BOARD_AGENTS;
+
+/**
+ * The assistant's conversational skill block — console-editable in
+ * /console/agents (agent row 'assistant', seeded by migration 0005). Appended
+ * to the assistant's built-in system prompt; this is where the operator shapes
+ * HOW the assistant prepares to-do lists and proposes tasks.
+ */
+export const DEFAULT_ASSISTANT_SKILL =
+  'ACTION-ITEM SKILL: when asked to prepare a to-do list, action items, or tasks from a meeting, ' +
+  'analyze the transcript yourself, extract the concrete follow-ups (infer sensible ones when implied), ' +
+  'and reply with a short numbered list of proposed task titles. Ask only whether to create them; on ' +
+  'confirmation create each with create_task (meeting context in notes) and confirm what was created.';
+
+export async function loadAssistantSkill(pool: Pool): Promise<string> {
+  try {
+    const { rows } = await pool.query<{ prompt: string }>(
+      `SELECT prompt FROM agent_configs WHERE agent = 'assistant' AND enabled = TRUE ORDER BY version DESC LIMIT 1`,
+    );
+    const prompt = rows[0]?.prompt?.trim();
+    return prompt || DEFAULT_ASSISTANT_SKILL;
+  } catch {
+    return DEFAULT_ASSISTANT_SKILL;
+  }
+}

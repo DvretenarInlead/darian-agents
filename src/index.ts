@@ -7,6 +7,7 @@ import { createAssistantRoutes } from './web/assistant.js';
 import { createMcpRoutes } from './web/mcp.js';
 import { ProjectsApiHubSpotClient } from './integrations/hubspot/projectsApi.js';
 import { GraphqlFirefliesClient } from './integrations/fireflies/client.js';
+import { loadAssistantSkill } from './products/meeting/prompts.js';
 import { AnthropicLlmClient } from './integrations/anthropic/client.js';
 import { ElevenLabsVoiceClient } from './integrations/elevenlabs/client.js';
 import { appendAudit } from './core/audit/writer.js';
@@ -26,6 +27,16 @@ import { keyringFromConfig } from './core/crypto/envelope.js';
  */
 export function buildServer() {
   const cfg = config();
+
+  // Console-editable assistant skill (agent_configs row 'assistant'), cached
+  // briefly so every voice question doesn't cost a DB read.
+  let skillCache: { at: number; text: string } | null = null;
+  const loadSkill = async (): Promise<string> => {
+    if (skillCache && Date.now() - skillCache.at < 30_000) return skillCache.text;
+    const text = await loadAssistantSkill(getPool());
+    skillCache = { at: Date.now(), text };
+    return text;
+  };
   // trustProxy: behind DO App Platform's LB the client IP arrives via
   // X-Forwarded-For; without this, IP-based checks would see the LB's address.
   const app = Fastify({ logger: { level: cfg.logLevel }, trustProxy: cfg.trustProxy });
@@ -132,6 +143,7 @@ export function buildServer() {
         ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
         // HubSpot task tools for voice commands (kill-switch gated writes).
         ...(cfg.hubspot.accessToken ? { taskOps: new ProjectsApiHubSpotClient() } : {}),
+        loadSkill,
       }),
     );
   }
@@ -149,6 +161,7 @@ export function buildServer() {
         accessToken: cfg.mcp.accessToken,
         ...(cfg.hubspot.accessToken ? { taskOps: new ProjectsApiHubSpotClient() } : {}),
         ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
+        loadSkill,
       }),
     );
   }

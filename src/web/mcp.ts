@@ -103,6 +103,8 @@ export interface McpRoutesOptions {
   taskOps?: HubSpotTaskOps;
   /** Read-only Fireflies lookup tools for ask_assistant; omit → ledger-only. */
   fireflies?: AssistantDeps['fireflies'];
+  /** Loads the console-editable skill block for ask_assistant. */
+  loadSkill?: () => Promise<string>;
   /** Shared secret MCP clients present as `Authorization: Bearer <token>`. */
   accessToken: string;
   rateLimit?: { windowMs: number; max: number };
@@ -126,10 +128,12 @@ export function createMcpRoutes(opts: McpRoutesOptions): FastifyPluginAsync {
     switch (name) {
       case 'ask_assistant': {
         const question = sanitize(String(args.question ?? ''), { maxLength: QUESTION_MAX });
+        const skillPrompt = opts.loadSkill ? await opts.loadSkill() : undefined;
         const result = await askAssistant(
           {
             pool: opts.pool,
             llm: opts.llm,
+            ...(skillPrompt ? { skillPrompt } : {}),
             ...(opts.model ? { model: opts.model } : {}),
             ...(opts.fireflies ? { fireflies: opts.fireflies } : {}),
             ...(opts.taskOps ? { taskOps: opts.taskOps } : {}),

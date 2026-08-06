@@ -8,6 +8,7 @@ import { loadResolutionPolicy } from '../../core/orchestrator/policy.js';
 import { LlmExtractor } from './extract.js';
 import { LlmBoardRunner } from './board.js';
 import { loadAgentPrompts } from './prompts.js';
+import { loadSyncRules } from './rules.js';
 import { processMeeting } from './pipeline.js';
 import { log } from '../../core/obs/logger.js';
 
@@ -43,6 +44,7 @@ export function makeMeetingHandler(deps: MeetingHandlerDeps): JobHandler {
     const transcript = await deps.fireflies.fetchTranscript(meetingId);
     const promptFor = await loadAgentPrompts(deps.pool);
     const policy = await loadResolutionPolicy(deps.pool);
+    const rules = await loadSyncRules(deps.pool, deps.projectDefaults);
 
     const summary = await processMeeting(
       {
@@ -51,6 +53,7 @@ export function makeMeetingHandler(deps: MeetingHandlerDeps): JobHandler {
         board: { runner: new LlmBoardRunner(deps.llm, promptFor), policy },
         hubspot: deps.hubspot,
         projectDefaults: deps.projectDefaults,
+        rules,
         now: () => new Date().toISOString(),
       },
       { meetingId, transcript, apply: true },

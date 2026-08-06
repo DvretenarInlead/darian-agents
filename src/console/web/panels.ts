@@ -5,6 +5,11 @@ import { isEngaged, setKillSwitch } from '../killswitch.js';
 import { recordSodAction, assertApprovalAllowed, SeparationOfDutiesError } from '../rbac/sod.js';
 import { layout, csrfField, esc, type NavUser } from './views.js';
 import { resolveUser, csrfOk, can, ensureCsrf, type ConsoleDeps, type CurrentUser } from './context.js';
+import { AGENTS } from '../../core/agents/contract.js';
+import { getAgentScope } from '../../core/governance/credentials.js';
+import { config } from '../../config/index.js';
+import { DEFAULT_AGENT_PROMPTS, DEFAULT_ASSISTANT_SKILL } from '../../products/meeting/prompts.js';
+import { SyncRules, SETTINGS_KEY, loadSyncRules } from '../../products/meeting/rules.js';
 
 function navUser(u: CurrentUser): NavUser {
   return { email: u.email, permissions: u.permissions };
@@ -129,6 +134,9 @@ type Guard = (req: FastifyRequest, reply: FastifyReply, deps: ConsoleDeps, perm?
 type NeedsSudo = (reply: FastifyReply, user: CurrentUser, returnTo: string) => boolean;
 
 function registerAgentRoutes(app: FastifyInstance, deps: ConsoleDeps, guard: Guard, needsSudo: NeedsSudo): void {
+  // Agents dashboard: the FULL roster (not just customised rows) with live
+  // capability badges (governance scope + which integrations are configured),
+  // enabled state, and prompt/model editing. Saving creates a new version.
   app.get('/console/agents', async (req, reply) => {
     const user = await guard(req, reply, deps, 'agents:edit');
     if (!user) return;
@@ -136,17 +144,44 @@ function registerAgentRoutes(app: FastifyInstance, deps: ConsoleDeps, guard: Gua
     const { rows } = await deps.pool.query<{ agent: string; prompt: string; model: string; enabled: boolean; version: number }>(
       `SELECT DISTINCT ON (agent) agent, prompt, model, enabled, version FROM agent_configs ORDER BY agent, version DESC`,
     );
-    const body = `<h1>Agents</h1>${rows
-      .map(
-        (r) => `<div class="card" style="max-width:640px"><strong>${esc(r.agent)}</strong> <span class="muted">v${esc(r.version)} · ${r.enabled ? 'enabled' : 'disabled'}</span>
-        <form method="post" action="/console/agents">${csrfField(csrf)}<input type="hidden" name="agent" value="${esc(r.agent)}">
-          <label>Model</label><input name="model" value="${esc(r.model)}">
-          <label>Prompt</label><textarea name="prompt" rows="4">${esc(r.prompt)}</textarea>
-          <label><input type="checkbox" name="enabled" style="width:auto" ${r.enabled ? 'checked' : ''}> enabled</label>
+    const configured = new Map(rows.map((r) => [r.agent, r]));
+    const cfg = config();
+
+    const toolBadges = (agent: string): string => {
+      const scope = getAgentScope(agent as (typeof AGENTS)[number]);
+      const badges: string[] = scope.egress.map((h) => h.replace('api.', ''));
+      if (agent === 'assistant') {
+        badges.push(cfg.fireflies.apiKey ? 'meeting tools: ON' : 'meeting tools: off (no FIREFLIES_API_KEY)');
+        badges.push(cfg.hubspot.accessToken ? 'task tools: ON' : 'task tools: off (no HUBSPOT_ACCESS_TOKEN)');
+        badges.push(cfg.elevenlabs.apiKey ? 'voice: ON' : 'voice: browser fallback');
+      }
+      if (agent === 'orchestrator') {
+        badges.push(cfg.slack.botToken && cfg.slack.channelId ? 'slack pings: ON' : 'slack pings: off');
+      }
+      return badges.map((b) => `<span class="muted">[${esc(b)}]</span>`).join(' ');
+    };
+
+    const defaultPromptFor = (agent: string): string =>
+      agent === 'assistant'
+        ? DEFAULT_ASSISTANT_SKILL
+        : ((DEFAULT_AGENT_PROMPTS as Record<string, string>)[agent] ?? '');
+
+    const body = `<h1>Agents</h1>
+      <p class="muted">All platform agents. Badges show each agent's allowed egress and live tool status.
+      Prompt edits are versioned, audited, and take effect within ~30s (assistant) or on the next run (board).</p>
+      ${AGENTS.map((agent) => {
+        const r = configured.get(agent);
+        const prompt = r?.prompt ?? defaultPromptFor(agent);
+        const enabled = r?.enabled ?? true;
+        const status = r ? `v${r.version} · ${enabled ? 'enabled' : 'DISABLED'}` : 'default (not customised)';
+        return `<div class="card" style="max-width:680px"><strong>${esc(agent)}</strong> <span class="muted">${esc(status)}</span><br>${toolBadges(agent)}
+        <form method="post" action="/console/agents">${csrfField(csrf)}<input type="hidden" name="agent" value="${esc(agent)}">
+          <label>Model <span class="muted">(empty = platform default)</span></label><input name="model" value="${esc(r?.model ?? '')}">
+          <label>Prompt${agent === 'assistant' ? ' <span class="muted">(conversational skill block — how it prepares lists/tasks)</span>' : ''}</label><textarea name="prompt" rows="5">${esc(prompt)}</textarea>
+          <label><input type="checkbox" name="enabled" style="width:auto" ${enabled ? 'checked' : ''}> enabled</label>
           <p><button>Save new version</button></p>
-        </form></div>`,
-      )
-      .join('')}`;
+        </form></div>`;
+      }).join('')}`;
     return reply.type('text/html').send(layout({ title: 'Agents', user: { email: user.email, permissions: user.permissions }, body }));
   });
 
@@ -168,6 +203,81 @@ function registerAgentRoutes(app: FastifyInstance, deps: ConsoleDeps, guard: Gua
 }
 
 function registerTriggerRoutes(app: FastifyInstance, deps: ConsoleDeps, guard: Guard): void {
+  // Skills: sync rules — how the pipeline creates HubSpot projects/tasks and
+  // which data lands in which fields. Stored in app_settings, versioned,
+  // audited; the assistant's conversational skill lives in the Agents panel.
+  const envProjectDefaults = () => ({
+    pipeline: process.env.HUBSPOT_PROJECT_PIPELINE ?? 'default',
+    pipelineStage: process.env.HUBSPOT_PROJECT_STAGE ?? 'new',
+  });
+
+  app.get('/console/skills', async (req, reply) => {
+    const user = await guard(req, reply, deps, 'agents:edit');
+    if (!user) return;
+    const csrf = ensureCsrf(req, reply, deps);
+    const rules = await loadSyncRules(deps.pool, envProjectDefaults());
+    const body = `<h1>Skills — sync rules</h1>
+      <p class="muted">Controls how approved meeting items become HubSpot projects and tasks.
+      The assistant's conversational skill (how it prepares to-do lists) is edited under <a href="/console/agents">Agents → assistant</a>.</p>
+      <div class="card" style="max-width:640px">
+      <form method="post" action="/console/skills">${csrfField(csrf)}
+        <h2 style="font-size:1rem">Project</h2>
+        <label>Name template <span class="muted">({meetingId} is substituted)</span></label>
+        <input name="nameTemplate" value="${esc(rules.project.nameTemplate)}">
+        <label>Pipeline</label><input name="pipeline" value="${esc(rules.project.pipeline)}">
+        <label>Pipeline stage</label><input name="pipelineStage" value="${esc(rules.project.pipelineStage)}">
+        <label>Type <span class="muted">(optional)</span></label><input name="type" value="${esc(rules.project.type ?? '')}">
+        <h2 style="font-size:1rem;margin-top:1rem">Tasks</h2>
+        <label>Title prefix <span class="muted">(e.g. "[PYB] "; empty = none)</span></label>
+        <input name="titlePrefix" value="${esc(rules.task.titlePrefix)}">
+        <label><input type="checkbox" name="includeMeetingContext" style="width:auto" ${rules.task.includeMeetingContext ? 'checked' : ''}> append meeting reference to task notes</label>
+        <label>Default due date <span class="muted">(days from processing; empty = leave unset)</span></label>
+        <input name="defaultDueDays" value="${rules.task.defaultDueDays ?? ''}" inputmode="numeric">
+        <p><button>Save rules</button></p>
+      </form></div>`;
+    return reply.type('text/html').send(layout({ title: 'Skills', user: navUser(user), body }));
+  });
+
+  app.post('/console/skills', async (req, reply) => {
+    const user = await guard(req, reply, deps, 'agents:edit');
+    if (!user) return;
+    if (!csrfOk(req)) return reply.code(403).send('invalid form token');
+    if (needsSudo(reply, user, '/console/skills')) return;
+    const f = (req.body ?? {}) as Record<string, string | undefined>;
+    const candidate = {
+      project: {
+        nameTemplate: f.nameTemplate ?? '',
+        pipeline: f.pipeline ?? '',
+        pipelineStage: f.pipelineStage ?? '',
+        ...(f.type?.trim() ? { type: f.type.trim() } : {}),
+      },
+      task: {
+        titlePrefix: f.titlePrefix ?? '',
+        includeMeetingContext: f.includeMeetingContext === 'on',
+        defaultDueDays: f.defaultDueDays?.trim() ? Number(f.defaultDueDays) : null,
+      },
+    };
+    const parsed = SyncRules.safeParse(candidate);
+    if (!parsed.success) {
+      const msg = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+      return reply.type('text/html').send(
+        layout({ title: 'Skills', user: navUser(user), flash: { kind: 'err', msg: `Invalid rules — ${msg}` }, body: '<p><a href="/console/skills">Back</a></p>' }),
+      );
+    }
+    await deps.pool.query(
+      `INSERT INTO app_settings (key, value, updated_by) VALUES ($1, $2::jsonb, $3)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, version = app_settings.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+      [SETTINGS_KEY, JSON.stringify(parsed.data), user.id],
+    );
+    await recordSodAction(deps.pool, { subjectId: SETTINGS_KEY, action: 'configured', actorId: user.id });
+    await appendAudit(
+      deps.pool,
+      { eventType: 'config_change', product: 'console', actorId: user.id, subjectId: SETTINGS_KEY, payload: { rules: parsed.data } },
+      deps.now().toISOString(),
+    );
+    return reply.redirect('/console/skills');
+  });
+
   app.get('/console/triggers', async (req, reply) => {
     const user = await guard(req, reply, deps, 'triggers:edit');
     if (!user) return;
