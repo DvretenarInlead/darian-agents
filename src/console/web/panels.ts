@@ -9,7 +9,8 @@ import { AGENTS } from '../../core/agents/contract.js';
 import { getAgentScope } from '../../core/governance/credentials.js';
 import { config } from '../../config/index.js';
 import { DEFAULT_AGENT_PROMPTS, DEFAULT_ASSISTANT_SKILL } from '../../products/meeting/prompts.js';
-import { SyncRules, SETTINGS_KEY, loadSyncRules } from '../../products/meeting/rules.js';
+import { SyncRules, SETTINGS_KEY, TOOL_POLICY_KEY, loadSyncRules, loadDisabledTools } from '../../products/meeting/rules.js';
+import { ASSISTANT_TOOL_CATALOG } from '../../products/meeting/assistant.js';
 import { randomBytes } from 'node:crypto';
 import { generateTotpSecret, otpauthUri, verifyTotp } from '../auth/totp.js';
 import { encrypt, decrypt } from '../../core/crypto/envelope.js';
@@ -237,8 +238,56 @@ function registerTriggerRoutes(app: FastifyInstance, deps: ConsoleDeps, guard: G
         <label>Default due date <span class="muted">(days from processing; empty = leave unset)</span></label>
         <input name="defaultDueDays" value="${rules.task.defaultDueDays ?? ''}" inputmode="numeric">
         <p><button>Save rules</button></p>
-      </form></div>`;
+      </form></div>
+      ${renderToolPermissions(await loadDisabledTools(deps.pool), csrf)}`;
     return reply.type('text/html').send(layout({ title: 'Skills', user: navUser(user), body }));
+  });
+
+  // Tool permissions: which assistant/MCP tools the agent may use at all.
+  // Unchecked = withheld from the model AND refused if called; applies to the
+  // voice HUD and the platform MCP within ~30s (cached policy).
+  function renderToolPermissions(disabled: string[], csrf: string): string {
+    const disabledSet = new Set(disabled);
+    const groups = [...new Set(ASSISTANT_TOOL_CATALOG.map((t) => t.group))];
+    const rows = groups
+      .map((group) => {
+        const items = ASSISTANT_TOOL_CATALOG.filter((t) => t.group === group)
+          .map(
+            (t) => `<label style="text-transform:none;letter-spacing:0;font-weight:400;display:flex;gap:.5rem;align-items:center;margin:.3rem 0">
+              <input type="checkbox" name="tool_${esc(t.name)}" style="width:auto" ${disabledSet.has(t.name) ? '' : 'checked'}>
+              <code>${esc(t.name)}</code> <span class="muted">${t.kind === 'write' ? 'WRITE' : 'read'}</span></label>`,
+          )
+          .join('');
+        return `<h2 style="font-size:1rem;margin-top:1rem">${esc(group)}</h2>${items}`;
+      })
+      .join('');
+    return `<div class="card" style="max-width:640px">
+      <h2 style="font-size:1rem;margin-top:0">Tool permissions</h2>
+      <p class="muted">Unchecked tools are hidden from the agent and refused if invoked — on both the voice HUD and the MCP connector. Takes effect within ~30 seconds.</p>
+      <form method="post" action="/console/skills/tools">${csrfField(csrf)}${rows}
+        <p><button>Save tool permissions</button></p>
+      </form></div>`;
+  }
+
+  app.post('/console/skills/tools', async (req, reply) => {
+    const user = await guard(req, reply, deps, 'agents:edit');
+    if (!user) return;
+    if (!csrfOk(req)) return reply.code(403).send('invalid form token');
+    if (needsSudo(reply, user, '/console/skills')) return;
+    const f = (req.body ?? {}) as Record<string, string | undefined>;
+    const disabled = ASSISTANT_TOOL_CATALOG.filter((t) => f[`tool_${t.name}`] !== 'on').map((t) => t.name);
+    await deps.pool.query(
+      `INSERT INTO app_settings (key, value, updated_by) VALUES ($1, $2::jsonb, $3)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, version = app_settings.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+      [TOOL_POLICY_KEY, JSON.stringify({ disabled }), user.id],
+    );
+    await recordSodAction(deps.pool, { subjectId: TOOL_POLICY_KEY, action: 'configured', actorId: user.id });
+    await appendAudit(
+      deps.pool,
+      { eventType: 'config_change', product: 'console', actorId: user.id, subjectId: TOOL_POLICY_KEY, payload: { disabled } },
+      deps.now().toISOString(),
+    );
+    return reply.redirect('/console/skills');
   });
 
   app.post('/console/skills', async (req, reply) => {

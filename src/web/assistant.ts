@@ -54,6 +54,8 @@ export interface AssistantRoutesOptions {
   projectOps?: AssistantDeps['projectOps'];
   /** Loads the console-editable skill block for the system prompt. */
   loadSkill?: () => Promise<string>;
+  /** Loads the operator tool policy (disabled tool names). */
+  loadToolPolicy?: () => Promise<string[]>;
   /** Shared secret the HUD presents as `Authorization: Bearer <token>`. */
   accessToken: string;
   /** IPs/CIDRs allowed to reach the assistant at all. Empty = deny everyone. */
@@ -159,11 +161,13 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
 
         const { question, history } = req.body as { question: string; history?: AssistantTurn[] };
         const skillPrompt = opts.loadSkill ? await opts.loadSkill() : undefined;
+        const disabledTools = opts.loadToolPolicy ? await opts.loadToolPolicy() : undefined;
         const result = await askAssistant(
           {
             pool: opts.pool,
             llm: opts.llm,
             ...(skillPrompt ? { skillPrompt } : {}),
+            ...(disabledTools?.length ? { disabledTools } : {}),
             ...(opts.model ? { model: opts.model } : {}),
             ...(opts.fireflies ? { fireflies: opts.fireflies } : {}),
             ...(opts.taskOps ? { taskOps: opts.taskOps } : {}),

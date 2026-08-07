@@ -155,6 +155,8 @@ export interface McpRoutesOptions {
   fireflies?: AssistantDeps['fireflies'];
   /** Loads the console-editable skill block for ask_assistant. */
   loadSkill?: () => Promise<string>;
+  /** Loads the operator tool policy (disabled tool names). */
+  loadToolPolicy?: () => Promise<string[]>;
   /** Shared secret MCP clients present as `Authorization: Bearer <token>`. */
   accessToken: string;
   rateLimit?: { windowMs: number; max: number };
@@ -321,11 +323,20 @@ export function createMcpRoutes(opts: McpRoutesOptions): FastifyPluginAsync {
           });
         case 'ping':
           return respond({});
-        case 'tools/list':
-          return respond({ tools: TOOLS });
+        case 'tools/list': {
+          const disabled = new Set(opts.loadToolPolicy ? await opts.loadToolPolicy() : []);
+          return respond({ tools: TOOLS.filter((t) => !disabled.has(t.name)) });
+        }
         case 'tools/call': {
           const name = String(msg.params?.name ?? '');
           const args = (msg.params?.arguments ?? {}) as Record<string, unknown>;
+          const disabled = opts.loadToolPolicy ? await opts.loadToolPolicy() : [];
+          if (disabled.includes(name)) {
+            return respond({
+              content: [{ type: 'text', text: `tool '${name}' is disabled by the operator (console → Skills)` }],
+              isError: true,
+            });
+          }
           try {
             const result = await callTool(name, args);
             await audit(

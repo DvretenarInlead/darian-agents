@@ -71,6 +71,11 @@ export interface AssistantDeps {
    * policy, not code. Sanitized and capped before use.
    */
   skillPrompt?: string;
+  /**
+   * Operator tool policy (console → Skills → tool permissions): names listed
+   * here are withheld from the model entirely and refused if called anyway.
+   */
+  disabledTools?: string[];
 }
 
 export interface AssistantAnswer {
@@ -338,6 +343,19 @@ const MEETING_TOOL_NAMES = new Set(MEETING_TOOLS.map((t) => t.name));
 const TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));
 const PROJECT_TOOL_NAMES = new Set(PROJECT_TOOLS.map((t) => t.name));
 
+/** Catalog for the console tool-permissions UI: every togglable tool. */
+export const ASSISTANT_TOOL_CATALOG: Array<{ name: string; group: string; kind: 'read' | 'write' }> = [
+  { name: 'list_recent_meetings', group: 'Fireflies', kind: 'read' },
+  { name: 'get_meeting_transcript', group: 'Fireflies', kind: 'read' },
+  { name: 'list_tasks', group: 'HubSpot tasks', kind: 'read' },
+  { name: 'create_task', group: 'HubSpot tasks', kind: 'write' },
+  { name: 'comment_on_task', group: 'HubSpot tasks', kind: 'write' },
+  { name: 'list_projects', group: 'HubSpot projects', kind: 'read' },
+  { name: 'list_project_tasks', group: 'HubSpot projects', kind: 'read' },
+  { name: 'create_project', group: 'HubSpot projects', kind: 'write' },
+  { name: 'create_task_in_project', group: 'HubSpot projects', kind: 'write' },
+];
+
 /** Execute one HubSpot project tool. Writes never bypass the kill-switch. */
 async function runProjectTool(
   deps: AssistantDeps,
@@ -407,6 +425,9 @@ async function runTool(
   name: string,
   input: Record<string, unknown>,
 ): Promise<{ text: string; flags: string[]; isError: boolean }> {
+  if (deps.disabledTools?.includes(name)) {
+    return { text: `tool '${name}' is disabled by the operator (console → Skills)`, flags: [], isError: true };
+  }
   if (deps.fireflies && MEETING_TOOL_NAMES.has(name)) return runMeetingTool(deps.fireflies, name, input);
   if (deps.taskOps && TASK_TOOL_NAMES.has(name)) return runTaskTool(deps, deps.taskOps, name, input);
   if (deps.projectOps && PROJECT_TOOL_NAMES.has(name)) return runProjectTool(deps, deps.projectOps, name, input);
@@ -456,11 +477,12 @@ export async function askAssistant(
 
   // Agentic path: any tools + a tool-capable client. Falls back to the plain
   // single-shot completion otherwise (tests, stub runs, nothing configured).
+  const disabled = new Set(deps.disabledTools ?? []);
   const tools: ToolSpec[] = [
     ...(deps.fireflies ? MEETING_TOOLS : []),
     ...(deps.taskOps ? TASK_TOOLS : []),
     ...(deps.projectOps ? PROJECT_TOOLS : []),
-  ];
+  ].filter((t) => !disabled.has(t.name));
   if (tools.length > 0 && supportsTools(deps.llm)) {
     let finalText = '';
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
