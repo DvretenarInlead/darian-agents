@@ -209,15 +209,18 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
             type: 'object',
             required: ['text'],
             additionalProperties: false,
-            properties: { text: { type: 'string', minLength: 1, maxLength: FREE_TEXT_MAX } },
+            properties: {
+              text: { type: 'string', minLength: 1, maxLength: FREE_TEXT_MAX },
+              speed: { type: 'number', minimum: 0.7, maximum: 1.2 },
+            },
           },
         },
       },
       async (req, reply) => {
         if (!opts.voice) return reply.code(501).send({ error: 'voice_not_configured' });
         if (!(await authorize(req, reply))) return reply;
-        const { text } = req.body as { text: string };
-        const out = await opts.voice.tts(text);
+        const { text, speed } = req.body as { text: string; speed?: number };
+        const out = await opts.voice.tts(text, speed !== undefined ? { speed } : undefined);
         return reply.header('content-type', out.mime).send(out.audio);
       },
     );
