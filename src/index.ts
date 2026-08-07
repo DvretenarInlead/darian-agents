@@ -40,6 +40,9 @@ export function buildServer() {
       ? new HubSpotMcpTaskOps()
       : new ProjectsApiHubSpotClient()
     : undefined;
+  // Project ops always use the direct adapter — Projects objects are not on
+  // HubSpot's MCP surface (yet).
+  const projectOps = cfg.hubspot.accessToken ? new ProjectsApiHubSpotClient() : undefined;
 
   let skillCache: { at: number; text: string } | null = null;
   const loadSkill = async (): Promise<string> => {
@@ -154,6 +157,7 @@ export function buildServer() {
         ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
         // HubSpot task tools for voice commands (kill-switch gated writes).
         ...(taskOps ? { taskOps } : {}),
+        ...(projectOps ? { projectOps } : {}),
         loadSkill,
       }),
     );
@@ -171,6 +175,7 @@ export function buildServer() {
         model: cfg.anthropic.assistantModel,
         accessToken: cfg.mcp.accessToken,
         ...(taskOps ? { taskOps } : {}),
+        ...(projectOps ? { projectOps } : {}),
         ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
         loadSkill,
       }),

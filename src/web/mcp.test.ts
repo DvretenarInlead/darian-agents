@@ -93,6 +93,10 @@ describe('MCP server', () => {
       'list_tasks',
       'create_task',
       'comment_on_task',
+      'list_projects',
+      'list_project_tasks',
+      'create_project',
+      'create_task_in_project',
     ]);
   });
 
@@ -170,5 +174,76 @@ describe('MCP server', () => {
       payload: { id: 1, method: 'tools/list' }, // missing jsonrpc
     });
     expect(bad.statusCode).toBe(400);
+  });
+});
+
+describe('MCP server — project tools', () => {
+  it('creates a project and a task inside it, listing both back', async () => {
+    const { InMemoryProjectOps } = await import('../integrations/hubspot/client.js');
+    const projectOps = new InMemoryProjectOps();
+    const app = Fastify();
+    await app.register(
+      createMcpRoutes({
+        pool: stubPool(),
+        llm: new StubLlmClient(() => 'x'),
+        accessToken: TOKEN,
+        projectOps,
+        nowMs: () => 1_700_000_000_000,
+        nowIso: () => '2026-08-06T12:00:00.000Z',
+        audit: async () => {},
+        frozen: async () => false,
+      }),
+    );
+    await app.ready();
+
+    const created = (
+      await rpc(app, 'tools/call', { name: 'create_project', arguments: { name: 'Resonate onboarding' } })
+    ).json();
+    expect(created.result.isError).toBe(false);
+    const projectId = JSON.parse(created.result.content[0].text).id;
+
+    const task = (
+      await rpc(app, 'tools/call', {
+        name: 'create_task_in_project',
+        arguments: { projectId, title: 'Configure SLA rules' },
+      })
+    ).json();
+    expect(task.result.isError).toBe(false);
+
+    const listed = (
+      await rpc(app, 'tools/call', { name: 'list_project_tasks', arguments: { projectId } })
+    ).json();
+    const tasks = JSON.parse(listed.result.content[0].text);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe('Configure SLA rules');
+
+    const projects = (await rpc(app, 'tools/call', { name: 'list_projects', arguments: {} })).json();
+    expect(JSON.parse(projects.result.content[0].text)[0].name).toBe('Resonate onboarding');
+  });
+
+  it('blocks project writes under the kill-switch and reports unconfigured without HubSpot', async () => {
+    const { InMemoryProjectOps } = await import('../integrations/hubspot/client.js');
+    const frozenApp = Fastify();
+    await frozenApp.register(
+      createMcpRoutes({
+        pool: stubPool(),
+        llm: new StubLlmClient(() => 'x'),
+        accessToken: TOKEN,
+        projectOps: new InMemoryProjectOps(),
+        audit: async () => {},
+        frozen: async () => true,
+      }),
+    );
+    await frozenApp.ready();
+    const blocked = (
+      await rpc(frozenApp, 'tools/call', { name: 'create_project', arguments: { name: 'nope' } })
+    ).json();
+    expect(blocked.result.isError).toBe(true);
+    expect(blocked.result.content[0].text).toMatch(/kill-switch/);
+
+    const bare = await buildApp();
+    const missing = (await rpc(bare, 'tools/call', { name: 'list_projects', arguments: {} })).json();
+    expect(missing.result.isError).toBe(true);
+    expect(missing.result.content[0].text).toMatch(/not configured/);
   });
 });

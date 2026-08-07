@@ -50,6 +50,8 @@ export interface AssistantRoutesOptions {
   fireflies?: AssistantDeps['fireflies'];
   /** HubSpot task tools for voice commands; writes are kill-switch gated. */
   taskOps?: AssistantDeps['taskOps'];
+  /** HubSpot project tools (always the direct adapter — Projects aren't on HubSpot's MCP). */
+  projectOps?: AssistantDeps['projectOps'];
   /** Loads the console-editable skill block for the system prompt. */
   loadSkill?: () => Promise<string>;
   /** Shared secret the HUD presents as `Authorization: Bearer <token>`. */
@@ -165,6 +167,7 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
             ...(opts.model ? { model: opts.model } : {}),
             ...(opts.fireflies ? { fireflies: opts.fireflies } : {}),
             ...(opts.taskOps ? { taskOps: opts.taskOps } : {}),
+            ...(opts.projectOps ? { projectOps: opts.projectOps } : {}),
           },
           question,
           history,

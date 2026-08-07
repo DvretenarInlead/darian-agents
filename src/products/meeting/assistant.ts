@@ -7,7 +7,8 @@ import {
   type ToolSpec,
 } from '../../integrations/anthropic/client.js';
 import type { FirefliesClient } from '../../integrations/fireflies/client.js';
-import type { HubSpotTaskOps } from '../../integrations/hubspot/client.js';
+import type { HubSpotProjectOps, HubSpotTaskOps } from '../../integrations/hubspot/client.js';
+import { loadSyncRules, type SyncRules } from './rules.js';
 import { isEngaged } from '../../console/killswitch.js';
 import { sanitize, scanForInjection } from '../../core/agents/sanitize.js';
 import { FREE_TEXT_MAX } from '../../core/agents/contract.js';
@@ -58,6 +59,8 @@ export interface AssistantDeps {
   fireflies?: Pick<FirefliesClient, 'listRecentTranscripts' | 'fetchTranscript'>;
   /** HubSpot task tools (list/create/comment). Writes are kill-switch gated. */
   taskOps?: HubSpotTaskOps;
+  /** HubSpot project tools (list/create/tasks-in-project). Kill-switch gated writes. */
+  projectOps?: HubSpotProjectOps;
   /** Kill-switch probe; defaults to the DB flag. Injected for tests. */
   frozen?: () => Promise<boolean>;
   /** ISO clock for task comments; injected for tests. */
@@ -95,6 +98,10 @@ const SYSTEM_PROMPT = [
   'comment_on_task ONLY when the user explicitly asks you to create or comment, never on your own',
   'initiative, and state in your answer exactly what you created or commented. create_task creates a',
   'real HubSpot task directly — never claim syncing needs extra configuration.',
+  'When project tools are available you can also manage HubSpot projects: list_projects and',
+  'list_project_tasks for reading; create_project and create_task_in_project for writes — same rule:',
+  'writes only on explicit request, and prefer creating tasks INSIDE the relevant project when the',
+  'user names one.',
   'Answers are read aloud: keep them to a sentence or two, conversational, and free of markup, bullet',
   'lists, or raw IDs (say "synced to HubSpot" rather than reading object references).',
   'Reply in the language the question was asked in.',
@@ -276,8 +283,123 @@ async function runTaskTool(
   }
 }
 
+const PROJECT_TOOLS: ToolSpec[] = [
+  {
+    name: 'list_projects',
+    description: 'List recent HubSpot projects (id, name, pipeline, stage, status).',
+    input_schema: {
+      type: 'object',
+      properties: { limit: { type: 'number', minimum: 1, maximum: 50 } },
+    },
+  },
+  {
+    name: 'list_project_tasks',
+    description: 'List the tasks associated with one HubSpot project by its id (from list_projects).',
+    input_schema: {
+      type: 'object',
+      required: ['projectId'],
+      properties: {
+        projectId: { type: 'string', maxLength: 64 },
+        limit: { type: 'number', minimum: 1, maximum: 50 },
+      },
+    },
+  },
+  {
+    name: 'create_project',
+    description:
+      'Create a HubSpot project. Only when the principal explicitly asked. Pipeline/stage come from the configured sync rules. Kill-switch gated.',
+    input_schema: {
+      type: 'object',
+      required: ['name'],
+      properties: {
+        name: { type: 'string', maxLength: 200 },
+        description: { type: 'string', maxLength: 2000 },
+      },
+    },
+  },
+  {
+    name: 'create_task_in_project',
+    description:
+      'Create a HubSpot task INSIDE a project (associated to it). Only when explicitly asked. Kill-switch gated.',
+    input_schema: {
+      type: 'object',
+      required: ['projectId', 'title'],
+      properties: {
+        projectId: { type: 'string', maxLength: 64 },
+        title: { type: 'string', maxLength: 500 },
+        notes: { type: 'string', maxLength: 4000 },
+        dueDate: { type: 'string', description: 'ISO date/datetime' },
+      },
+    },
+  },
+];
+
 const MEETING_TOOL_NAMES = new Set(MEETING_TOOLS.map((t) => t.name));
 const TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));
+const PROJECT_TOOL_NAMES = new Set(PROJECT_TOOLS.map((t) => t.name));
+
+/** Execute one HubSpot project tool. Writes never bypass the kill-switch. */
+async function runProjectTool(
+  deps: AssistantDeps,
+  projectOps: HubSpotProjectOps,
+  name: string,
+  input: Record<string, unknown>,
+): Promise<{ text: string; flags: string[]; isError: boolean }> {
+  const frozen = deps.frozen ?? (() => isEngaged(deps.pool));
+  try {
+    if (name === 'list_projects') {
+      const limit = Math.min(Math.max(Number(input.limit ?? 20), 1), 50);
+      const projects = await projectOps.listProjects(limit);
+      if (projects.length === 0) return { text: '(no projects found)', flags: [], isError: false };
+      const text = projects
+        .map((p) => `- id=${p.id} name=${sanitize(p.name, { maxLength: 200 })} stage=${p.pipelineStage ?? '?'} status=${p.status ?? '?'}`)
+        .join('\n');
+      return { text, flags: [], isError: false };
+    }
+    if (name === 'list_project_tasks') {
+      const projectId = sanitize(String(input.projectId ?? ''), { maxLength: 64 }).trim();
+      if (!projectId) return { text: 'projectId is required', flags: [], isError: true };
+      const limit = Math.min(Math.max(Number(input.limit ?? 25), 1), 50);
+      const tasks = await projectOps.listProjectTasks(projectId, limit);
+      if (tasks.length === 0) return { text: '(no tasks in this project)', flags: [], isError: false };
+      const text = tasks
+        .map((t) => `- id=${t.id} status=${t.status ?? '?'} due=${t.dueDate ?? '-'} title=${sanitize(t.title, { maxLength: 200 })}`)
+        .join('\n');
+      return { text, flags: [], isError: false };
+    }
+    if (name === 'create_project') {
+      if (await frozen()) return { text: 'external writes are frozen by the incident kill-switch', flags: [], isError: true };
+      const projectName = sanitize(String(input.name ?? ''), { maxLength: 200 }).trim();
+      if (!projectName) return { text: 'name is required', flags: [], isError: true };
+      const rules = await loadSyncRules(deps.pool, { pipeline: 'default', pipelineStage: 'new' });
+      const description = input.description ? sanitize(String(input.description), { maxLength: 2000 }) : undefined;
+      const created = await projectOps.createProject({
+        name: projectName,
+        pipeline: rules.project.pipeline,
+        pipelineStage: rules.project.pipelineStage,
+        ...(rules.project.type ? { type: rules.project.type } : {}),
+        ...(description ? { description } : {}),
+      });
+      return { text: `created project id=${created.id} name=${projectName}`, flags: [], isError: false };
+    }
+    if (name === 'create_task_in_project') {
+      if (await frozen()) return { text: 'external writes are frozen by the incident kill-switch', flags: [], isError: true };
+      const projectId = sanitize(String(input.projectId ?? ''), { maxLength: 64 }).trim();
+      const title = sanitize(String(input.title ?? ''), { maxLength: 500 }).trim();
+      if (!projectId || !title) return { text: 'projectId and title are required', flags: [], isError: true };
+      const notes = input.notes ? sanitize(String(input.notes), { maxLength: 4000 }) : undefined;
+      const created = await projectOps.createTaskInProject(projectId, {
+        title,
+        ...(notes ? { body: notes } : {}),
+        ...(input.dueDate ? { dueDate: String(input.dueDate) } : {}),
+      });
+      return { text: `created task id=${created.id} in project ${projectId} title=${title}`, flags: [], isError: false };
+    }
+    return { text: `unknown tool: ${name}`, flags: [], isError: true };
+  } catch (err) {
+    return { text: String(err instanceof Error ? err.message : err), flags: [], isError: true };
+  }
+}
 
 /** Dispatch a tool call to the right runner based on configured capabilities. */
 async function runTool(
@@ -287,6 +409,7 @@ async function runTool(
 ): Promise<{ text: string; flags: string[]; isError: boolean }> {
   if (deps.fireflies && MEETING_TOOL_NAMES.has(name)) return runMeetingTool(deps.fireflies, name, input);
   if (deps.taskOps && TASK_TOOL_NAMES.has(name)) return runTaskTool(deps, deps.taskOps, name, input);
+  if (deps.projectOps && PROJECT_TOOL_NAMES.has(name)) return runProjectTool(deps, deps.projectOps, name, input);
   return { text: `unknown tool: ${name}`, flags: [], isError: true };
 }
 
@@ -336,6 +459,7 @@ export async function askAssistant(
   const tools: ToolSpec[] = [
     ...(deps.fireflies ? MEETING_TOOLS : []),
     ...(deps.taskOps ? TASK_TOOLS : []),
+    ...(deps.projectOps ? PROJECT_TOOLS : []),
   ];
   if (tools.length > 0 && supportsTools(deps.llm)) {
     let finalText = '';
