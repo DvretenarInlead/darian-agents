@@ -17,9 +17,14 @@ export interface TtsResult {
   mime: string;
 }
 
+export interface TtsOptions {
+  /** Speaking rate multiplier (ElevenLabs supports ~0.7–1.2). */
+  speed?: number;
+}
+
 export interface VoiceClient {
   /** Synthesize speech for `text`. */
-  tts(text: string): Promise<TtsResult>;
+  tts(text: string, opts?: TtsOptions): Promise<TtsResult>;
   /** Transcribe recorded audio (webm/ogg/mp4 from MediaRecorder). */
   stt(audio: Buffer, mime: string): Promise<string>;
 }
@@ -38,15 +43,21 @@ export class ElevenLabsVoiceClient implements VoiceClient {
     return getScopedSecret('assistant', 'elevenlabs');
   }
 
-  async tts(text: string): Promise<TtsResult> {
+  async tts(text: string, opts?: TtsOptions): Promise<TtsResult> {
     const apiKey = this.key();
     const voiceId = config().elevenlabs.voiceId;
+    // Clamp to ElevenLabs' supported range; omit entirely at the default rate.
+    const speed = opts?.speed !== undefined ? Math.min(Math.max(opts.speed, 0.7), 1.2) : undefined;
     const res = await resilientFetch(
       `https://${HOST}/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`,
       {
         method: 'POST',
         headers: { 'xi-api-key': apiKey, 'content-type': 'application/json' },
-        body: JSON.stringify({ text, model_id: TTS_MODEL }),
+        body: JSON.stringify({
+          text,
+          model_id: TTS_MODEL,
+          ...(speed !== undefined && speed !== 1 ? { voice_settings: { speed } } : {}),
+        }),
       },
       { timeoutMs: 30_000, ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}) },
     );
@@ -77,11 +88,11 @@ export class ElevenLabsVoiceClient implements VoiceClient {
 /** Deterministic stub for tests. */
 export class StubVoiceClient implements VoiceClient {
   constructor(
-    private readonly onTts: (text: string) => TtsResult,
+    private readonly onTts: (text: string, opts?: TtsOptions) => TtsResult,
     private readonly onStt: (audio: Buffer, mime: string) => string,
   ) {}
-  async tts(text: string): Promise<TtsResult> {
-    return this.onTts(text);
+  async tts(text: string, opts?: TtsOptions): Promise<TtsResult> {
+    return this.onTts(text, opts);
   }
   async stt(audio: Buffer, mime: string): Promise<string> {
     return this.onStt(audio, mime);

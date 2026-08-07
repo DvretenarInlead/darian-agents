@@ -30,6 +30,26 @@ export type SyncRules = z.infer<typeof SyncRules>;
 
 export const SETTINGS_KEY = 'sync_rules';
 
+/**
+ * Operator tool policy: which assistant/MCP tools are disabled. Stored as
+ * {"disabled": ["create_project", ...]} under this key; missing/malformed →
+ * nothing disabled (tools are opt-out, availability itself is config-driven).
+ */
+export const TOOL_POLICY_KEY = 'assistant_tool_policy';
+
+const ToolPolicy = z.object({ disabled: z.array(z.string().max(64)).max(64) });
+
+export async function loadDisabledTools(pool: Pool): Promise<string[]> {
+  try {
+    const { rows } = await pool.query<{ value: unknown }>(`SELECT value FROM app_settings WHERE key = $1`, [TOOL_POLICY_KEY]);
+    if (!rows[0]) return [];
+    const parsed = ToolPolicy.safeParse(rows[0].value);
+    return parsed.success ? parsed.data.disabled : [];
+  } catch {
+    return [];
+  }
+}
+
 export function defaultSyncRules(env: { pipeline: string; pipelineStage: string; type?: string }): SyncRules {
   return {
     project: {

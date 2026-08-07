@@ -10,6 +10,7 @@ import { HubSpotMcpTaskOps } from './integrations/hubspot/mcpTaskOps.js';
 import type { HubSpotTaskOps } from './integrations/hubspot/client.js';
 import { GraphqlFirefliesClient } from './integrations/fireflies/client.js';
 import { loadAssistantSkill } from './products/meeting/prompts.js';
+import { loadDisabledTools } from './products/meeting/rules.js';
 import { AnthropicLlmClient } from './integrations/anthropic/client.js';
 import { ElevenLabsVoiceClient } from './integrations/elevenlabs/client.js';
 import { appendAudit } from './core/audit/writer.js';
@@ -40,6 +41,9 @@ export function buildServer() {
       ? new HubSpotMcpTaskOps()
       : new ProjectsApiHubSpotClient()
     : undefined;
+  // Project ops always use the direct adapter — Projects objects are not on
+  // HubSpot's MCP surface (yet).
+  const projectOps = cfg.hubspot.accessToken ? new ProjectsApiHubSpotClient() : undefined;
 
   let skillCache: { at: number; text: string } | null = null;
   const loadSkill = async (): Promise<string> => {
@@ -47,6 +51,15 @@ export function buildServer() {
     const text = await loadAssistantSkill(getPool());
     skillCache = { at: Date.now(), text };
     return text;
+  };
+
+  // Operator tool policy (console → Skills), same short cache.
+  let policyCache: { at: number; disabled: string[] } | null = null;
+  const loadToolPolicy = async (): Promise<string[]> => {
+    if (policyCache && Date.now() - policyCache.at < 30_000) return policyCache.disabled;
+    const disabled = await loadDisabledTools(getPool());
+    policyCache = { at: Date.now(), disabled };
+    return disabled;
   };
   // trustProxy: behind DO App Platform's LB the client IP arrives via
   // X-Forwarded-For; without this, IP-based checks would see the LB's address.
@@ -154,7 +167,9 @@ export function buildServer() {
         ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
         // HubSpot task tools for voice commands (kill-switch gated writes).
         ...(taskOps ? { taskOps } : {}),
+        ...(projectOps ? { projectOps } : {}),
         loadSkill,
+        loadToolPolicy,
       }),
     );
   }
@@ -171,8 +186,10 @@ export function buildServer() {
         model: cfg.anthropic.assistantModel,
         accessToken: cfg.mcp.accessToken,
         ...(taskOps ? { taskOps } : {}),
+        ...(projectOps ? { projectOps } : {}),
         ...(cfg.fireflies.apiKey ? { fireflies: new GraphqlFirefliesClient('assistant') } : {}),
         loadSkill,
+        loadToolPolicy,
       }),
     );
   }

@@ -353,3 +353,39 @@ describe('askAssistant — HubSpot task tools', () => {
     expect(block.content).toMatch(/kill-switch/);
   });
 });
+
+describe('askAssistant — operator tool policy', () => {
+  it('withholds disabled tools from the model and refuses direct calls', async () => {
+    const { InMemoryTaskOps } = await import('../../integrations/hubspot/client.js');
+    const taskOps = new InMemoryTaskOps();
+    class PolicyLlm {
+      readonly requests: import('../../integrations/anthropic/client.js').LlmRequest[] = [];
+      private step = 0;
+      async complete(): Promise<string> { throw new Error('unused'); }
+      async completeTurn(req: import('../../integrations/anthropic/client.js').LlmRequest) {
+        this.requests.push({ ...req, messages: [...req.messages] });
+        // First turn: try the disabled tool anyway; second: finish.
+        return this.step++ === 0
+          ? { stopReason: 'tool_use', content: [{ type: 'tool_use' as const, id: 't1', name: 'create_task', input: { title: 'nope' } }] }
+          : { stopReason: 'end_turn', content: [{ type: 'text' as const, text: 'Task creation is disabled.' }] };
+      }
+    }
+    const llm = new PolicyLlm();
+
+    const result = await askAssistant(
+      { pool: stubPool([]), llm, taskOps, frozen: async () => false, disabledTools: ['create_task', 'comment_on_task'] },
+      'create a task: nope',
+    );
+
+    // Disabled tools are not offered…
+    expect(llm.requests[0]!.tools?.map((t) => t.name)).toEqual(['list_tasks']);
+    // …and a forced call comes back as an operator-policy error.
+    const second = llm.requests[1]!;
+    const lastMsg = second.messages[second.messages.length - 1]!;
+    const block = (lastMsg.content as { is_error?: boolean; content: string }[])[0]!;
+    expect(block.is_error).toBe(true);
+    expect(block.content).toMatch(/disabled by the operator/);
+    expect(taskOps.tasks).toHaveLength(0);
+    expect(result.answer).toBe('Task creation is disabled.');
+  });
+});

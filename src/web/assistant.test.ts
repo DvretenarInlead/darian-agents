@@ -241,6 +241,44 @@ describe('assistant routes', () => {
     expect(spoken).toEqual(['hello there']);
   });
 
+  it('passes the speaking speed through to the provider and rejects out-of-range values', async () => {
+    const calls: { text: string; speed?: number }[] = [];
+    const voice = new StubVoiceClient(
+      (text, opts) => {
+        calls.push({ text, ...(opts?.speed !== undefined ? { speed: opts.speed } : {}) });
+        return { audio: Buffer.from('mp3'), mime: 'audio/mpeg' };
+      },
+      () => 'never',
+    );
+    const app = await buildApp({ voice });
+
+    const fast = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/tts',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      payload: { text: 'brzo', speed: 1.15 },
+    });
+    expect(fast.statusCode).toBe(200);
+
+    // No speed → provider called without options, so the default rate applies.
+    const plain = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/tts',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      payload: { text: 'obicno' },
+    });
+    expect(plain.statusCode).toBe(200);
+    expect(calls).toEqual([{ text: 'brzo', speed: 1.15 }, { text: 'obicno' }]);
+
+    const tooFast = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/tts',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      payload: { text: 'prebrzo', speed: 2 },
+    });
+    expect(tooFast.statusCode).toBe(400);
+  });
+
   it('transcribes recorded audio through the provider', async () => {
     const received: { bytes: number; mime: string }[] = [];
     const voice = new StubVoiceClient(

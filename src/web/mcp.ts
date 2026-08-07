@@ -6,7 +6,8 @@ import { appendAudit, type AuditEvent } from '../core/audit/writer.js';
 import { isEngaged } from '../console/killswitch.js';
 import { sanitize } from '../core/agents/sanitize.js';
 import type { LlmClient } from '../integrations/anthropic/client.js';
-import type { HubSpotTaskOps } from '../integrations/hubspot/client.js';
+import type { HubSpotProjectOps, HubSpotTaskOps } from '../integrations/hubspot/client.js';
+import { loadSyncRules } from '../products/meeting/rules.js';
 import { askAssistant, QUESTION_MAX, type AssistantDeps } from '../products/meeting/assistant.js';
 import { listCommitments } from '../products/meeting/query.js';
 
@@ -92,6 +93,53 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'list_projects',
+    description: 'List recent HubSpot projects (id, name, pipeline, stage, status).',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'number', minimum: 1, maximum: 50 } },
+    },
+  },
+  {
+    name: 'list_project_tasks',
+    description: 'List tasks associated with one HubSpot project by id.',
+    inputSchema: {
+      type: 'object',
+      required: ['projectId'],
+      properties: {
+        projectId: { type: 'string', maxLength: 64 },
+        limit: { type: 'number', minimum: 1, maximum: 50 },
+      },
+    },
+  },
+  {
+    name: 'create_project',
+    description:
+      'Create a HubSpot project (pipeline/stage from configured sync rules). Owner-initiated write: audited, kill-switch gated.',
+    inputSchema: {
+      type: 'object',
+      required: ['name'],
+      properties: {
+        name: { type: 'string', maxLength: 200 },
+        description: { type: 'string', maxLength: 2000 },
+      },
+    },
+  },
+  {
+    name: 'create_task_in_project',
+    description: 'Create a HubSpot task inside a project (associated to it). Audited; kill-switch gated.',
+    inputSchema: {
+      type: 'object',
+      required: ['projectId', 'title'],
+      properties: {
+        projectId: { type: 'string', maxLength: 64 },
+        title: { type: 'string', maxLength: 500 },
+        notes: { type: 'string', maxLength: 4000 },
+        dueDate: { type: 'string', description: 'ISO date/datetime' },
+      },
+    },
+  },
 ] as const;
 
 export interface McpRoutesOptions {
@@ -101,10 +149,14 @@ export interface McpRoutesOptions {
   model?: string;
   /** HubSpot task operations; task tools report unconfigured without it. */
   taskOps?: HubSpotTaskOps;
+  /** HubSpot project operations (direct adapter); project tools report unconfigured without it. */
+  projectOps?: HubSpotProjectOps;
   /** Read-only Fireflies lookup tools for ask_assistant; omit → ledger-only. */
   fireflies?: AssistantDeps['fireflies'];
   /** Loads the console-editable skill block for ask_assistant. */
   loadSkill?: () => Promise<string>;
+  /** Loads the operator tool policy (disabled tool names). */
+  loadToolPolicy?: () => Promise<string[]>;
   /** Shared secret MCP clients present as `Authorization: Bearer <token>`. */
   accessToken: string;
   rateLimit?: { windowMs: number; max: number };
@@ -183,12 +235,54 @@ export function createMcpRoutes(opts: McpRoutesOptions): FastifyPluginAsync {
         const note = await opts.taskOps.commentOnTask(taskId, comment, nowIso());
         return { noteId: note.id, taskId };
       }
+      case 'list_projects': {
+        if (!opts.projectOps) throw new Error('HubSpot is not configured (HUBSPOT_ACCESS_TOKEN missing)');
+        const limit = Math.min(Math.max(Number(args.limit ?? 25), 1), 50);
+        return opts.projectOps.listProjects(limit);
+      }
+      case 'list_project_tasks': {
+        if (!opts.projectOps) throw new Error('HubSpot is not configured (HUBSPOT_ACCESS_TOKEN missing)');
+        const projectId = sanitize(String(args.projectId ?? ''), { maxLength: 64 }).trim();
+        if (!projectId) throw new Error('projectId is required');
+        const limit = Math.min(Math.max(Number(args.limit ?? 25), 1), 50);
+        return opts.projectOps.listProjectTasks(projectId, limit);
+      }
+      case 'create_project': {
+        if (!opts.projectOps) throw new Error('HubSpot is not configured (HUBSPOT_ACCESS_TOKEN missing)');
+        if (await frozen()) throw new Error('external writes are frozen by the incident kill-switch');
+        const projectName = sanitize(String(args.name ?? ''), { maxLength: 200 }).trim();
+        if (!projectName) throw new Error('name is required');
+        const rules = await loadSyncRules(opts.pool, { pipeline: 'default', pipelineStage: 'new' });
+        const description = args.description ? sanitize(String(args.description), { maxLength: 2000 }) : undefined;
+        const created = await opts.projectOps.createProject({
+          name: projectName,
+          pipeline: rules.project.pipeline,
+          pipelineStage: rules.project.pipelineStage,
+          ...(rules.project.type ? { type: rules.project.type } : {}),
+          ...(description ? { description } : {}),
+        });
+        return { id: created.id, name: projectName };
+      }
+      case 'create_task_in_project': {
+        if (!opts.projectOps) throw new Error('HubSpot is not configured (HUBSPOT_ACCESS_TOKEN missing)');
+        if (await frozen()) throw new Error('external writes are frozen by the incident kill-switch');
+        const projectId = sanitize(String(args.projectId ?? ''), { maxLength: 64 }).trim();
+        const title = sanitize(String(args.title ?? ''), { maxLength: 500 }).trim();
+        if (!projectId || !title) throw new Error('projectId and title are required');
+        const notes = args.notes ? sanitize(String(args.notes), { maxLength: 4000 }) : undefined;
+        const created = await opts.projectOps.createTaskInProject(projectId, {
+          title,
+          ...(notes ? { body: notes } : {}),
+          ...(args.dueDate ? { dueDate: String(args.dueDate) } : {}),
+        });
+        return { id: created.id, projectId, title };
+      }
       default:
         throw new Error(`unknown tool: ${name}`);
     }
   }
 
-  const WRITE_TOOLS = new Set(['create_task', 'comment_on_task']);
+  const WRITE_TOOLS = new Set(['create_task', 'comment_on_task', 'create_project', 'create_task_in_project']);
 
   const plugin: FastifyPluginAsync = async (app: FastifyInstance) => {
     // Stateless Streamable HTTP: no SSE stream to resume.
@@ -229,11 +323,20 @@ export function createMcpRoutes(opts: McpRoutesOptions): FastifyPluginAsync {
           });
         case 'ping':
           return respond({});
-        case 'tools/list':
-          return respond({ tools: TOOLS });
+        case 'tools/list': {
+          const disabled = new Set(opts.loadToolPolicy ? await opts.loadToolPolicy() : []);
+          return respond({ tools: TOOLS.filter((t) => !disabled.has(t.name)) });
+        }
         case 'tools/call': {
           const name = String(msg.params?.name ?? '');
           const args = (msg.params?.arguments ?? {}) as Record<string, unknown>;
+          const disabled = opts.loadToolPolicy ? await opts.loadToolPolicy() : [];
+          if (disabled.includes(name)) {
+            return respond({
+              content: [{ type: 'text', text: `tool '${name}' is disabled by the operator (console → Skills)` }],
+              isError: true,
+            });
+          }
           try {
             const result = await callTool(name, args);
             await audit(
