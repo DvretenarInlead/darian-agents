@@ -220,6 +220,9 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     </select>
   </div>
   <div class="row"><label for="speak">Speak replies</label><input type="checkbox" id="speak" checked></div>
+  <div class="row"><label for="rate">Voice speed <span class="muted" id="rateVal">1.1×</span></label>
+    <input type="range" id="rate" min="0.8" max="1.3" step="0.05" value="1.1" style="width:7rem">
+  </div>
   <div class="row" id="wakeWrap"><label for="wake">Wake word</label><input type="checkbox" id="wake"></div>
   <div class="row"><label for="wakePhrase">Phrase</label><input type="text" id="wakePhrase" value="hi helper"></div>
   <div class="row"><span>Access token</span><button class="linkish" id="resetToken">change…</button></div>
@@ -292,6 +295,16 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
   if (saved) langSel.value = saved;
   langSel.onchange = () => localStorage.setItem('assistant_lang', langSel.value);
 
+  // Voice speed (applies to the provider voice and the browser fallback).
+  const rateInput = document.getElementById('rate');
+  const rateVal = document.getElementById('rateVal');
+  const savedRate = localStorage.getItem('assistant_rate');
+  if (savedRate) rateInput.value = savedRate;
+  const rate = () => Number(rateInput.value) || 1.1;
+  const showRate = () => { rateVal.textContent = rate().toFixed(2).replace(/0$/, '') + '×'; };
+  showRate();
+  rateInput.oninput = () => { localStorage.setItem('assistant_rate', rateInput.value); showRate(); };
+
   function add(cls, text) {
     const div = document.createElement('div');
     div.className = 'msg ' + cls;
@@ -318,6 +331,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
       u.lang = langSel.value;
+      u.rate = rate();
       const voice = speechSynthesis.getVoices().find(v => v.lang === langSel.value)
         || speechSynthesis.getVoices().find(v => v.lang.startsWith(langSel.value.slice(0, 2)));
       if (voice) u.voice = voice;
@@ -332,7 +346,7 @@ export const ASSISTANT_PAGE = /* html */ `<!doctype html>
     const res = await fetch('/api/assistant/tts', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + getToken(false) },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, speed: Math.min(rate(), 1.2) }),
     });
     if (!res.ok) throw new Error('tts ' + res.status);
     const url = URL.createObjectURL(await res.blob());

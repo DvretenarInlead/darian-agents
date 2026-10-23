@@ -1,4 +1,15 @@
-import type { OwnerQuery, OwnerRef, SyncPlan, SyncPreview, SyncResult, SyncOp, TaskInput, TaskSummary } from './types.js';
+import type {
+  OwnerQuery,
+  OwnerRef,
+  ProjectInput,
+  ProjectSummary,
+  SyncPlan,
+  SyncPreview,
+  SyncResult,
+  SyncOp,
+  TaskInput,
+  TaskSummary,
+} from './types.js';
 
 /**
  * The port every consumer uses. Three concrete adapters implement it:
@@ -48,6 +59,65 @@ export interface HubSpotTaskOps {
   createTask(task: TaskInput): Promise<{ id: string }>;
   /** Attach a note to a task. `nowIso` is injected for audit determinism. */
   commentOnTask(taskId: string, comment: string, nowIso: string): Promise<{ id: string }>;
+}
+
+/**
+ * Project operations for the owner-facing assistant/MCP surface. Projects are
+ * NOT on HubSpot's MCP surface, so this port is always served by the direct
+ * Projects API adapter regardless of HUBSPOT_USE_MCP. Same rules as task ops:
+ * human-initiated, kill-switch and audit enforced by callers.
+ */
+export interface HubSpotProjectOps {
+  listProjects(limit: number): Promise<ProjectSummary[]>;
+  createProject(project: ProjectInput): Promise<{ id: string }>;
+  /** Create a task and associate it to the given project. */
+  createTaskInProject(projectId: string, task: TaskInput): Promise<{ id: string }>;
+  listProjectTasks(projectId: string, limit: number): Promise<TaskSummary[]>;
+}
+
+/** Deterministic in-memory project ops for tests/local runs. */
+export class InMemoryProjectOps implements HubSpotProjectOps {
+  readonly projects: (ProjectSummary & { tasks: TaskSummary[] })[] = [];
+  private seq = 0;
+
+  async listProjects(limit: number): Promise<ProjectSummary[]> {
+    return this.projects.slice(0, limit).map(({ tasks: _t, ...p }) => p);
+  }
+
+  async createProject(project: ProjectInput): Promise<{ id: string }> {
+    this.seq += 1;
+    const id = `project-${this.seq}`;
+    this.projects.unshift({
+      id,
+      name: project.name,
+      pipeline: project.pipeline ?? null,
+      pipelineStage: project.pipelineStage ?? null,
+      status: project.status ?? null,
+      tasks: [],
+    });
+    return { id };
+  }
+
+  async createTaskInProject(projectId: string, task: TaskInput): Promise<{ id: string }> {
+    const project = this.projects.find((p) => p.id === projectId);
+    if (!project) throw new Error(`no such project: ${projectId}`);
+    this.seq += 1;
+    const id = `task-${this.seq}`;
+    project.tasks.push({
+      id,
+      title: task.title,
+      status: task.status ?? 'NOT_STARTED',
+      dueDate: task.dueDate ?? null,
+      body: task.body ?? null,
+    });
+    return { id };
+  }
+
+  async listProjectTasks(projectId: string, limit: number): Promise<TaskSummary[]> {
+    const project = this.projects.find((p) => p.id === projectId);
+    if (!project) throw new Error(`no such project: ${projectId}`);
+    return project.tasks.slice(0, limit);
+  }
 }
 
 /** Deterministic in-memory task ops for tests/local runs. */

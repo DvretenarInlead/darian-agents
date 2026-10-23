@@ -35,6 +35,15 @@ export interface TaskInput {
   status?: string;
 }
 
+/** Read-side project row (assistant/MCP surface). */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  pipeline: string | null;
+  pipelineStage: string | null;
+  status: string | null;
+}
+
 /** Read-side task row (assistant/MCP surface). */
 export interface TaskSummary {
   id: string;
