@@ -5,6 +5,15 @@ import { generateSessionToken, hashToken } from '../auth/session.js';
 import { generateCsrfToken, verifyCsrf } from '../auth/csrf.js';
 import type { Keyring } from '../../core/crypto/envelope.js';
 import type { UsersRepo, SessionsRepo } from './repos.js';
+import type { LockfileStatus, TeamGate, TeamLauncher, TeamStore } from '../../products/team/types.js';
+
+/** PYB Team control plane ports, present only when TEAM_ENABLED and the Anthropic key are set. */
+export interface TeamConsoleDeps {
+  store: TeamStore;
+  launcher: TeamLauncher;
+  gate: TeamGate;
+  lockStatus: () => Promise<LockfileStatus>;
+}
 
 /** Everything the console routes depend on; injectable for tests. */
 export interface ConsoleDeps {
@@ -16,6 +25,7 @@ export interface ConsoleDeps {
   now: () => Date;
   secureCookies: boolean;
   ttls: { idleSec: number; absoluteSec: number; sudoWindowSec: number };
+  team?: TeamConsoleDeps;
 }
 
 export interface CurrentUser {

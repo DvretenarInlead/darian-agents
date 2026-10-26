@@ -47,6 +47,7 @@ function main(): void {
     ['HubSpot sync (HUBSPOT_ACCESS_TOKEN)', Boolean(cfg.hubspot.accessToken)],
     ['HubSpot admin-mode owner resolution (HUBSPOT_SERVICE_KEY)', Boolean(cfg.hubspot.serviceKey)],
     ['Repo scoring (GITHUB_TOKEN)', Boolean(cfg.github.token)],
+    ['Team control plane (TEAM_ENABLED + ANTHROPIC_API_KEY)', cfg.team.enabled && Boolean(cfg.anthropic.apiKey)],
     ['Off-box audit shipping (AUDIT_SHIP_ENDPOINT)', Boolean(cfg.auditShip.endpoint)],
   ];
   console.log('\nFeatures (unset = that capability is simply inactive):');
