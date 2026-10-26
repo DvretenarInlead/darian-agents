@@ -10,13 +10,25 @@ export const TeamLockfile = z.looseObject({
   environments: z.record(z.string(), z.unknown()).default({}),
 });
 
+/**
+ * The agent files' `metadata.slug` values and their display names both have to
+ * land on the catalog slug (agents/pyb/README.md "How the app maps these files").
+ */
+const SLUG_ALIASES: Record<string, string> = {
+  dev: 'hubspot_developer',
+  security: 'security_reviewer',
+  qa_reviewer: 'qa',
+  migration_and_data: 'migration_data',
+};
+
 /** 'PYB Project-Manager' | 'pyb-project-manager' | 'project_manager' → 'project_manager'; 'pyb-office' → 'office'. */
 export function normalizeSlug(raw: string): string {
-  return raw
+  const slug = raw
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .replace(/^pyb_/, '');
+  return SLUG_ALIASES[slug] ?? slug;
 }
 
 function parseLockfile(text: string): LockfileStatus {

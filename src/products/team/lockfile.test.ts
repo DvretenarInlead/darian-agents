@@ -15,6 +15,13 @@ describe('normalizeSlug', () => {
     expect(normalizeSlug('project_manager')).toBe('project_manager');
     expect(normalizeSlug('pyb-office')).toBe('office');
     expect(normalizeSlug('  --PYB  HubSpot Admin-- ')).toBe('hubspot_admin');
+    // The agent files' own metadata.slug values and the display names that differ from the catalog.
+    expect(normalizeSlug('dev')).toBe('hubspot_developer');
+    expect(normalizeSlug('PYB HubSpot Developer')).toBe('hubspot_developer');
+    expect(normalizeSlug('security')).toBe('security_reviewer');
+    expect(normalizeSlug('PYB Security Reviewer')).toBe('security_reviewer');
+    expect(normalizeSlug('PYB QA Reviewer')).toBe('qa');
+    expect(normalizeSlug('PYB Migration and Data')).toBe('migration_data');
   });
 });
 
