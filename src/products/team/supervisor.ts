@@ -68,6 +68,12 @@ export function createTeamSupervisor(deps: SupervisorDeps): TeamSupervisor {
               await deps.store.updateRunState(run.id, { listCostCents: session.listCostCents });
             }
           } catch (err) {
+            if ((err as { status?: unknown } | null)?.status === 404) {
+              // Session deleted out from under us: no more events will ever arrive.
+              await deps.store.updateRunState(run.id, { status: 'terminated' });
+              await deps.store.voidPendingForRun(run.id);
+              continue;
+            }
             log().warn({ runId: run.id, err: String(err) }, 'team housekeeping: retrieveSession failed');
           }
         }

@@ -181,6 +181,18 @@ export class InMemoryTeamStore implements TeamStore {
     const a = [...this.actions.values()].find((x) => x.eventId === toolUseId);
     if (!a) return null;
     if (a.status === 'deciding') {
+      if (a.decision !== result) {
+        // The API's answer is the truth (answered in the Console before our send landed).
+        return {
+          action: this.patchAction(a.id, {
+            status: result === 'allow' ? 'approved' : 'denied',
+            decision: result,
+            decisionReason: 'external',
+            decidedBy: null,
+          }),
+          wasOurs: false,
+        };
+      }
       return { action: this.patchAction(a.id, { status: finalStatus(a.decision, a.decisionReason) }), wasOurs: true };
     }
     if (a.status === 'pending') {

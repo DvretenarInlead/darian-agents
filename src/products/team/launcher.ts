@@ -186,9 +186,13 @@ export function createTeamLauncher(deps: LauncherDeps): TeamLauncher {
     }
     await refuseIfFrozen(TEAM_AGENT_CATALOG[run.agentSlug]);
 
+    const statusBeforeSend = run.status;
     await client.sendUserMessage(run.sessionId, sanitize(text.data, { maxLength: 20_000 }));
-    // 'running' makes the supervisor reopen the stream if it had closed on idle.
-    await store.updateRunState(run.id, { status: 'running' });
+    // 'running' makes the supervisor reopen the stream if it had closed on idle. Only
+    // write it if nothing newer landed meanwhile (the stream may already have moved the
+    // run to requires_action/terminated while the send was in flight).
+    const after = await store.getRun(run.id);
+    if (after && after.status === statusBeforeSend) await store.updateRunState(run.id, { status: 'running' });
     await sod.record({ subjectId: sodSubject.run(run.id), action: 'configured', actorId: input.actorId });
     await audit({
       eventType: 'team_run_message',
@@ -230,7 +234,14 @@ export function createTeamLauncher(deps: LauncherDeps): TeamLauncher {
     await refuseIfFrozen(TEAM_AGENT_CATALOG[run.agentSlug]);
 
     await client.updateBudget(run.sessionId, newCents);
-    await store.updateRunState(run.id, { budgetCents: newCents });
+    // budget_reached would otherwise be a dead end: reopen the stream and let the
+    // operator follow up (the API applies the new budget from the next turn).
+    await store.updateRunState(
+      run.id,
+      run.status === 'budget_reached'
+        ? { status: 'idle', stopReason: null, budgetCents: newCents }
+        : { budgetCents: newCents },
+    );
     await audit({
       eventType: 'team_budget_changed',
       product: 'team',

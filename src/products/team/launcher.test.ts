@@ -284,6 +284,17 @@ describe('launcher.followUp', () => {
     expect(JSON.stringify(h.audits[0]!.payload)).not.toContain('ignore');
   });
 
+  it('does not clobber a newer worker state written while the send was in flight', async () => {
+    await h.store.updateRunState(runId, { status: 'idle' });
+    const orig = h.client.sendUserMessage.bind(h.client);
+    h.client.sendUserMessage = async (sid, text) => {
+      await orig(sid, text);
+      await h.store.updateRunState(runId, { status: 'requires_action' });
+    };
+    await h.launcher.followUp({ runId, text: 'hi', actorId: OTHER });
+    expect((await h.store.getRun(runId))!.status).toBe('requires_action');
+  });
+
   it('refuses requires_action and budget_reached as run_busy, terminated and failed as run_not_active', async () => {
     await h.store.updateRunState(runId, { status: 'requires_action' });
     await expectCode(h.launcher.followUp({ runId, text: 'hi', actorId: OTHER }), 'run_busy');
@@ -372,6 +383,19 @@ describe('launcher.raiseBudget', () => {
       actorId: OTHER,
       payload: { fromCents: 1000, toCents: 3000 },
     });
+  });
+
+  it('reopens a budget_reached run as idle so a follow-up can proceed', async () => {
+    await h.store.updateRunState(runId, { status: 'budget_reached', stopReason: 'budget_reached' });
+    const run = await h.launcher.raiseBudget({ runId, newCents: 3000, actorId: OTHER });
+    expect(run).toMatchObject({ status: 'idle', stopReason: null, budgetCents: 3000 });
+    await h.launcher.followUp({ runId, text: 'carry on', actorId: OTHER });
+    expect((await h.store.getRun(runId))!.status).toBe('running');
+  });
+
+  it('leaves the status alone when the run was not budget_reached', async () => {
+    await h.store.updateRunState(runId, { status: 'running' });
+    expect((await h.launcher.raiseBudget({ runId, newCents: 3000, actorId: OTHER })).status).toBe('running');
   });
 
   it('accepts exactly the configured maximum', async () => {

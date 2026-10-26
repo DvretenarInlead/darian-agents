@@ -43,6 +43,9 @@ const ask = (id: string, over: Record<string, unknown> = {}): RawSessionEvent =>
   input: { dealId: '1' }, evaluated_permission: 'ask', ...over,
 });
 
+// JSON.stringify renders a NUL as the six characters \u0000, so look for both forms.
+const hasNul = (s: string): boolean => s.includes('\\u0000') || s.includes(String.fromCharCode(0));
+
 describe('parseTeamEvent', () => {
   it('maps status types', () => {
     expect(parseTeamEvent({ id: 'a', type: 'session.status_running' })).toEqual({ kind: 'status', status: 'running' });
@@ -167,10 +170,11 @@ describe('processEvent', () => {
     const { deps, store, gate, run } = await setup();
     await processEvent(deps, run, ask('e1'));
     // Same tool_use id surfaced again (seen-ledger lost): the unique event id still holds.
+    // The still-pending ask is re-announced (idempotent) in case the first announce crashed.
     store.seen.clear();
     await processEvent(deps, run, ask('e1'));
     expect(store.actions.size).toBe(1);
-    expect(gate.onNewAsk).toHaveBeenCalledTimes(1);
+    expect(gate.onNewAsk).toHaveBeenCalledTimes(2);
   });
 
   it('flags truncated input and injection text', async () => {
@@ -249,6 +253,17 @@ describe('processEvent', () => {
     expect(audits.map((a) => a.eventType)).toEqual(['team_session']);
   });
 
+  it('a differing echo on a deciding row settles to the echoed result as external', async () => {
+    const { deps, store, audits, run } = await setup();
+    await processEvent(deps, run, ask('e1'));
+    const action = [...store.actions.values()][0]!;
+    await store.claimDecision(action.id, { decision: 'allow', reason: 'approver', decidedBy: 'u1', denyMessage: null });
+    audits.length = 0;
+    await processEvent(deps, run, { id: 'c1', type: 'user.tool_confirmation', tool_use_id: 'e1', result: 'deny' });
+    expect(audits[0]!.payload).toMatchObject({ reason: 'external', result: 'deny' });
+    expect(store.actions.get(action.id)).toMatchObject({ status: 'denied', decision: 'deny', decisionReason: 'external', decidedBy: null });
+  });
+
   it('audits team_session with the capped event, except span.* events', async () => {
     const { deps, store, audits, run } = await setup();
     await processEvent(deps, run, { id: 'm1', type: 'agent.message', content: [{ type: 'text', text: 'hello' }], session_thread_id: 'sthr_1' });
@@ -266,6 +281,75 @@ describe('processEvent', () => {
     expect(audits).toHaveLength(0);
     expect(store.seen.has('s1')).toBe(true);
     expect(await processEvent(deps, run, { id: 's1', type: 'span.model_request_end' })).toMatchObject({ duplicate: true });
+  });
+
+  it('maps session.deleted to a terminal status that voids pending asks', async () => {
+    expect(parseTeamEvent({ id: 'd', type: 'session.deleted' })).toEqual({ kind: 'status', status: 'terminated' });
+    const { deps, store, run } = await setup();
+    await processEvent(deps, run, ask('e1'));
+    const r = await processEvent(deps, run, { id: 'd1', type: 'session.deleted' });
+    expect(r.terminal).toBe(true);
+    expect(store.runs.get(run.id)!.status).toBe('terminated');
+    expect([...store.actions.values()][0]!.status).toBe('void');
+  });
+
+  it('strips NUL/C0 characters so the event is stored, audited and marked seen', async () => {
+    const { deps, store, audits, run } = await setup();
+    const nasty = ask('e1', { input: { 'k\u0000ey': 'a\u0000b\u0001c\td', nested: ['x\u0000'] } });
+    await expect(processEvent(deps, run, nasty)).resolves.toMatchObject({ duplicate: false });
+    expect(store.seen.has('e1')).toBe(true);
+    const stored = [...store.actions.values()][0]!;
+    expect(hasNul(JSON.stringify(stored.input))).toBe(false);
+    expect(stored.input).toEqual({ key: 'abc\td', nested: ['x'] });
+    expect(hasNul(JSON.stringify(audits))).toBe(false);
+    expect(JSON.stringify(capForAudit({ a: 'x\u0000y' }).value)).toBe('{"a":"xy"}');
+  });
+
+  it('retries the team_session audit once with a minimal payload, then rethrows', async () => {
+    const audits: AuditEvent[] = [];
+    let failures = 1;
+    const { deps, store, run } = await setup({
+      audit: async (e) => {
+        if (e.eventType === 'team_session' && failures-- > 0) throw new Error('unsupported Unicode escape sequence');
+        audits.push(e);
+      },
+    });
+    await expect(processEvent(deps, run, { id: 'm1', type: 'agent.message', content: [] })).resolves.toMatchObject({ duplicate: false });
+    expect(store.seen.has('m1')).toBe(true);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.payload).toEqual({
+      sessionId: 'sesn_1', eventId: 'm1', eventType: 'agent.message', threadId: null, truncated: true,
+      auditError: 'unsupported Unicode escape sequence',
+    });
+
+    failures = 2;
+    await expect(processEvent(deps, run, { id: 'm2', type: 'agent.message', content: [] })).rejects.toThrow('unsupported');
+    expect(store.seen.has('m2')).toBe(false);
+  });
+
+  it('replaying an ask whose announce crashed still announces it', async () => {
+    const { deps, store, gate, audits, run } = await setup();
+    vi.mocked(gate.onNewAsk).mockRejectedValueOnce(new Error('crash'));
+    await expect(processEvent(deps, run, ask('e1'))).rejects.toThrow('crash');
+    expect(store.actions.size).toBe(1);
+    expect(store.seen.has('e1')).toBe(false);
+    await expect(processEvent(deps, run, ask('e1'))).resolves.toMatchObject({ duplicate: false });
+    expect(store.actions.size).toBe(1);
+    expect(gate.onNewAsk).toHaveBeenCalledTimes(2);
+    // The pending audit may repeat on the replay path; that is accepted.
+    expect(audits.filter((a) => a.eventType === 'team_action_pending')).toHaveLength(2);
+    expect(store.seen.has('e1')).toBe(true);
+  });
+
+  it('does not re-announce a replayed ask that is already decided', async () => {
+    const { deps, store, gate, run } = await setup();
+    await processEvent(deps, run, ask('e1'));
+    const a = [...store.actions.values()][0]!;
+    await store.claimDecision(a.id, { decision: 'deny', reason: 'approver', decidedBy: 'u', denyMessage: null });
+    await store.finalizeDecision(a.id);
+    store.seen.delete('e1');
+    await processEvent(deps, run, ask('e1'));
+    expect(gate.onNewAsk).toHaveBeenCalledTimes(1);
   });
 
   it('writes the seen-ledger entry with type and thread', async () => {

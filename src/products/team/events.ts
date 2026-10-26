@@ -70,6 +70,7 @@ export function parseTeamEvent(raw: RawSessionEvent): TeamEvent {
     case 'session.status_rescheduled':
       return { kind: 'status', status: 'rescheduling' };
     case 'session.status_terminated':
+    case 'session.deleted': // gone for good: terminal, so pending asks are voided
       return { kind: 'status', status: 'terminated' };
     case 'session.status_idle': {
       const p = Idle.safeParse(raw);
@@ -92,8 +93,8 @@ export function parseTeamEvent(raw: RawSessionEvent): TeamEvent {
       return {
         kind: 'ask',
         toolKind: mcp ? 'mcp' : 'builtin',
-        toolName: p.data.name,
-        mcpServer: mcp ? (p.data.mcp_server_name ?? null) : null,
+        toolName: stripControlChars(p.data.name) as string,
+        mcpServer: mcp ? ((stripControlChars(p.data.mcp_server_name ?? null) as string | null) ?? null) : null,
         input: p.data.input ?? null,
         threadId: threadIdOf(raw),
       };
@@ -109,7 +110,7 @@ export function parseTeamEvent(raw: RawSessionEvent): TeamEvent {
         const e = p.data.error;
         msg = p.data.message ?? (typeof e === 'string' ? e : e?.message);
       }
-      return { kind: 'error', message: (msg ?? 'session error').slice(0, MAX_ERROR_CHARS) };
+      return { kind: 'error', message: (stripControlChars(msg ?? 'session error') as string).slice(0, MAX_ERROR_CHARS) };
     }
     case 'agent.message': {
       const p = MessageEvt.safeParse(raw);
@@ -131,10 +132,29 @@ export function eventKey(raw: RawSessionEvent): string {
   return `anon:${createHash('sha256').update(canonicalize(raw)).digest('hex')}`;
 }
 
+// C0 controls except \t \n \r. Postgres JSONB (and TEXT) reject U+0000, and one
+// such byte in a tool result would otherwise wedge the run's stream on replay.
+// eslint-disable-next-line no-control-regex
+const C0_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g;
+const MAX_SANITIZE_DEPTH = 64;
+
+/** Recursively strip C0 control characters from every string and object key. */
+export function stripControlChars(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return value.replace(C0_CONTROLS, '');
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= MAX_SANITIZE_DEPTH) return '[too deep]';
+  if (Array.isArray(value)) return value.map((v) => stripControlChars(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) out[k.replace(C0_CONTROLS, '')] = stripControlChars(v, depth + 1);
+  return out;
+}
+
 /** Cap a value's serialised size. Over the cap it is replaced by a marked preview. */
 export function capForAudit(value: unknown, maxChars = AUDIT_EVENT_CAP_CHARS): { value: unknown; truncated: boolean } {
   let json: string | undefined;
   try {
+    // Honour toJSON first (Dates etc.), then sanitise the plain-data result.
+    value = stripControlChars(JSON.parse(JSON.stringify(value) ?? 'null'));
     json = JSON.stringify(value);
   } catch {
     return { value: { unserializable: true }, truncated: true };
@@ -212,7 +232,10 @@ async function apply(deps: StreamDeps, run: TeamRun, raw: RawSessionEvent): Prom
         portalKind: run.portalKind,
         expiresAt: new Date(now.getTime() + deps.cfg.approvalTtlHours * 3_600_000),
       });
-      if (inserted) await announceAsk(deps, run, action);
+      // A replay (crash between insert and announce) must still announce a pending
+      // ask, or a frozen/disabled-portal ask would sit undecided. The pending audit
+      // may repeat on that path; onNewAsk is idempotent.
+      if (inserted || action.status === 'pending') await announceAsk(deps, run, action);
       break;
     }
     case 'confirmation_echo': {
@@ -240,20 +263,35 @@ async function apply(deps: StreamDeps, run: TeamRun, raw: RawSessionEvent): Prom
   // span.* events are trace detail (thousands per run): seen-ledger only.
   if (!raw.type.startsWith('span.')) {
     const capped = capForAudit(raw, AUDIT_EVENT_CAP_CHARS);
-    await audit({
-      eventType: 'team_session',
-      product: 'team',
-      actorId: null,
-      subjectId: run.id,
-      payload: {
-        sessionId: run.sessionId,
-        eventId: raw.id,
-        eventType: raw.type,
-        threadId,
-        event: capped.value,
-        truncated: capped.truncated,
-      },
-    });
+    const payload = {
+      sessionId: run.sessionId,
+      eventId: raw.id,
+      eventType: raw.type,
+      threadId,
+      event: capped.value,
+      truncated: capped.truncated,
+    };
+    try {
+      await audit({ eventType: 'team_session', product: 'team', actorId: null, subjectId: run.id, payload });
+    } catch (err) {
+      // One unauditable event must not freeze the run: retry once with a minimal
+      // payload; if even that fails the store is really down, so rethrow.
+      const auditError = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+      await audit({
+        eventType: 'team_session',
+        product: 'team',
+        actorId: null,
+        subjectId: run.id,
+        payload: {
+          sessionId: run.sessionId,
+          eventId: raw.id,
+          eventType: raw.type,
+          threadId,
+          truncated: true,
+          auditError,
+        },
+      });
+    }
   }
 
   await store.markEventSeen({ eventKey: key, runId: run.id, eventType: raw.type, threadId, processedAt: now });

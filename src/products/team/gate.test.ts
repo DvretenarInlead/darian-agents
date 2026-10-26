@@ -384,6 +384,23 @@ describe('team gate', () => {
       expect((await store.getPendingAction(b.action.id))!.status).toBe('denied');
     });
 
+    it('retries an undeliverable system denial at most every ten minutes', async () => {
+      const a = await seed({ kind: 'sandbox' });
+      client.failNext('sendToolConfirmation', new Error('gone'));
+      expect(await gate.enforceKillSwitch()).toBe(0);
+      expect(decideAudit()).toHaveLength(1);
+      expect((await store.getPendingAction(a.action.id))!.lastError).toBe('gone');
+
+      clock = new Date(clock.getTime() + 60_000);
+      expect(await gate.enforceKillSwitch()).toBe(0); // backed off: no send, no audit
+      expect(client.sent).toHaveLength(0);
+      expect(decideAudit()).toHaveLength(1);
+
+      clock = new Date(clock.getTime() + 10 * 60_000);
+      expect(await gate.enforceKillSwitch()).toBe(1);
+      expect((await store.getPendingAction(a.action.id))!.status).toBe('denied');
+    });
+
     it('a sweep voids asks of a terminated run without sending', async () => {
       const { run, action } = await seed({ kind: 'sandbox' });
       await store.updateRunState(run.id, { status: 'terminated' });

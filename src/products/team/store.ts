@@ -414,6 +414,16 @@ export class PgTeamStore implements TeamStore {
       const row = cur.rows[0];
       if (!row) return null;
       const t = this.now();
+      if (row.status === 'deciding' && row.decision !== result) {
+        // The API's answer is the truth (answered in the Console before our send landed).
+        const upd = await c.query<ActionRow>(
+          `UPDATE team_pending_actions
+           SET status = $2, decision = $3, decision_reason = 'external', decided_by = NULL, updated_at = $4
+           WHERE id = $1 RETURNING *`,
+          [row.id, result === 'allow' ? 'approved' : 'denied', result, t],
+        );
+        return { action: toAction(upd.rows[0]!), wasOurs: false };
+      }
       if (row.status === 'deciding') {
         const upd = await c.query<ActionRow>(
           `UPDATE team_pending_actions SET status = CASE WHEN decision = 'allow' THEN 'approved'

@@ -171,6 +171,20 @@ describe('team supervisor', () => {
     await t.stop(p);
   });
 
+  it('treats a 404 from retrieveSession as terminated and voids pending asks', async () => {
+    const t = setup();
+    const a = await t.addRun();
+    const ask = await t.store.insertPendingAction({
+      runId: a.run.id, eventId: 'tu1', threadId: null, toolKind: 'mcp', toolName: 'x', mcpServer: null, input: {},
+      inputTruncated: false, injectionFlags: [], portalId: null, portalKind: 'sandbox', expiresAt: new Date('2027-01-01'),
+    });
+    t.client.failNext('retrieveSession', Object.assign(new Error('not found'), { status: 404 }));
+    const p = t.start();
+    await until(() => t.store.runs.get(a.run.id)!.status === 'terminated', 'terminated via 404');
+    expect(t.store.actions.get(ask.action.id)!.status).toBe('void');
+    await t.stop(p);
+  });
+
   it('survives a failing retrieveSession and keeps running', async () => {
     const t = setup();
     const a = await t.addRun();

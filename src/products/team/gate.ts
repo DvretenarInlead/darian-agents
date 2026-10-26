@@ -21,6 +21,9 @@ const SWEEP_PENDING_LIMIT = 500;
 const SWEEP_EXPIRED_LIMIT = 100;
 const STUCK_LIMIT = 100;
 const STUCK_AFTER_MS = 5 * 60_000;
+// A failed send reverts the row to pending with last_error set; system sweeps retry
+// it at most this often so a dead session is not hammered (and audited) every tick.
+const RETRY_BACKOFF_MS = 10 * 60_000;
 
 interface Resolution {
   result: ToolDecision;
@@ -95,7 +98,8 @@ export function createTeamGate(deps: GateDeps): TeamGate {
     return { actionId: action.id, status, reason: r.reason, forced: r.forced };
   }
 
-  async function decideAsSystem(action: PendingAction, reason: DecisionReason): Promise<GateOutcome> {
+  async function decideAsSystem(action: PendingAction, reason: DecisionReason): Promise<GateOutcome | null> {
+    if (action.lastError && now().getTime() - action.updatedAt.getTime() < RETRY_BACKOFF_MS) return null;
     const run = await store.getRun(action.runId);
     if (!run || run.status === 'terminated') return voidRun(action);
     return settle(
@@ -111,8 +115,7 @@ export function createTeamGate(deps: GateDeps): TeamGate {
     let n = 0;
     for (const a of actions) {
       try {
-        await decideAsSystem(a, reason);
-        n++;
+        if (await decideAsSystem(a, reason)) n++;
       } catch (err) {
         if (err instanceof TeamError && err.code === 'action_already_decided') continue;
         log().warn({ err, actionId: a.id, reason }, 'team gate: system decision failed');

@@ -480,13 +480,27 @@ d('PgTeamStore (Postgres)', () => {
         expect(denied!.action).toMatchObject({ status: 'denied', decision: 'deny', decisionReason: 'external' });
       });
 
-      it('deciding is finalised by our own decision, ignoring the echoed result (wasOurs=true)', async () => {
+      it('deciding with a matching echo is finalised by our own decision (wasOurs=true)', async () => {
         const run = await liveRun();
         const a = (await store.insertPendingAction(newAction(run.id))).action;
         await store.claimDecision(a.id, { decision: 'deny', reason: 'ttl', decidedBy: null, denyMessage: 'late' });
         const res = await store.settleFromEcho(a.eventId, 'deny', at(1));
         expect(res!.wasOurs).toBe(true);
         expect(res!.action).toMatchObject({ status: 'expired', decision: 'deny', decisionReason: 'ttl' });
+      });
+
+      it('deciding with a differing echo settles to the echoed result as external (wasOurs=false)', async () => {
+        const run = await liveRun();
+        const a = (await store.insertPendingAction(newAction(run.id))).action;
+        const b = (await store.insertPendingAction(newAction(run.id))).action;
+        await store.claimDecision(a.id, { decision: 'allow', reason: 'approver', decidedBy: userId, denyMessage: null });
+        await store.claimDecision(b.id, { decision: 'deny', reason: 'ttl', decidedBy: null, denyMessage: 'late' });
+        const toDeny = await store.settleFromEcho(a.eventId, 'deny', at(1));
+        expect(toDeny!.wasOurs).toBe(false);
+        expect(toDeny!.action).toMatchObject({ status: 'denied', decision: 'deny', decisionReason: 'external', decidedBy: null });
+        const toAllow = await store.settleFromEcho(b.eventId, 'allow', at(1));
+        expect(toAllow!.wasOurs).toBe(false);
+        expect(toAllow!.action).toMatchObject({ status: 'approved', decision: 'allow', decisionReason: 'external', decidedBy: null });
       });
 
       it('terminal rows and unknown tool-use ids give null', async () => {
@@ -508,9 +522,10 @@ d('PgTeamStore (Postgres)', () => {
         ]);
         const final = (await store.getPendingAction(a.id))!;
         if (claimed) {
-          // Claim won the row lock: the echo then saw 'deciding' and finalised it as ours.
-          expect(echo!.wasOurs).toBe(true);
-          expect(final.status).toBe('approved');
+          // Claim won the row lock: the echo (deny) then saw our 'allow' deciding row
+          // and the API's answer wins as an external denial.
+          expect(echo!.wasOurs).toBe(false);
+          expect(final).toMatchObject({ status: 'denied', decisionReason: 'external', decidedBy: null });
         } else {
           // Echo won: external denial, and the claim found nothing pending.
           expect(echo!.wasOurs).toBe(false);
