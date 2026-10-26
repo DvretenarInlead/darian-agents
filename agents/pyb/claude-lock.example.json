@@ -1,0 +1,15 @@
+{
+  "agents": {
+    "pyb-project-manager": { "id": "agent_test_pm", "version": 3 },
+    "pyb-solutions-architect": { "id": "agent_test_sa", "version": "2" },
+    "pyb-content": { "id": "agent_test_content", "version": 1 },
+    "pyb-security-reviewer": { "id": "agent_test_sec", "version": 1 },
+    "pyb-hubspot-admin": { "id": "agent_test_admin", "version": 1 }
+  },
+  "environments": {
+    "pyb-office": { "id": "env_test_office" },
+    "pyb-build": { "id": "env_test_build" },
+    "pyb-migration": { "id": "env_test_migration" },
+    "pyb-orchestrated": { "id": "env_test_orchestrated" }
+  }
+}
