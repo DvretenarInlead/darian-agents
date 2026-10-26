@@ -31,6 +31,7 @@ export interface SanitizeOptions {
 export function sanitize(input: string, opts: SanitizeOptions): string {
   let out = input.replace(CONTROL_CHARS, '');
   for (const marker of ROLE_MARKERS) {
+    // eslint-disable-next-line no-irregular-whitespace -- the U+200B is the point
     out = out.replace(marker, (m) => `​${m}`); // zero-width prefix breaks the token
   }
   if (out.length > opts.maxLength) {

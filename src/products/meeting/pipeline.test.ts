@@ -20,7 +20,7 @@ function fakePool() {
   const escalations: unknown[][] = [];
   const syncs: unknown[][] = [];
   const auditClient = {
-    query: async (sql: string, params: unknown[]) => {
+    query: async (sql: string, _params: unknown[]) => {
       if (sql.includes('INSERT INTO audit_log')) return { rows: [{ id: '1' }], rowCount: 1 };
       if (sql.includes('SELECT row_hash')) return { rows: [], rowCount: 0 };
       return { rows: [], rowCount: 0 };
