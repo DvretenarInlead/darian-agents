@@ -25,7 +25,7 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
   DATABASE_URL: z.string().min(1),
-  DATABASE_SSL: boolish.default('false'),
+  DATABASE_SSL: boolish.default(false),
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
   /** Managed-Postgres CA certificate (PEM, or base64 of the PEM). Enables full TLS verification. */
   DATABASE_CA_CERT: z.string().optional(),
@@ -48,7 +48,7 @@ const envSchema = z.object({
   HUBSPOT_SERVICE_KEY: z.string().optional(),
   HUBSPOT_PROJECTS_API_VERSION: z.string().default('2026-03'),
   /** Route assistant/MCP task tools through HubSpot's official MCP server subprocess. */
-  HUBSPOT_USE_MCP: boolish.default('false'),
+  HUBSPOT_USE_MCP: boolish.default(false),
 
   GITHUB_TOKEN: z.string().optional(),
 
@@ -69,7 +69,7 @@ const envSchema = z.object({
   ASSISTANT_ALLOWED_IPS: z.string().optional(),
 
   /** Trust X-Forwarded-For from the fronting proxy/LB (required on DO App Platform for real client IPs). */
-  TRUST_PROXY: boolish.default('false'),
+  TRUST_PROXY: boolish.default(false),
 
   SESSION_ACCESS_TTL_SEC: z.coerce.number().int().positive().default(900),
   SESSION_IDLE_TTL_SEC: z.coerce.number().int().positive().default(1800),

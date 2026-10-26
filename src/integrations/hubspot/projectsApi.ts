@@ -1,11 +1,12 @@
 import { config } from '../../config/index.js';
 import { assertEgressAllowed, getScopedSecret, EGRESS_HOSTS } from '../../core/governance/credentials.js';
 import { resilientFetch } from '../../core/net/resilientFetch.js';
-import { renderPreview, type HubSpotClient, type HubSpotTaskOps } from './client.js';
+import { renderPreview, type HubSpotClient, type HubSpotProjectOps, type HubSpotTaskOps } from './client.js';
 import type {
   OwnerQuery,
   OwnerRef,
   ProjectInput,
+  ProjectSummary,
   SyncOp,
   SyncPlan,
   SyncPreview,
@@ -42,6 +43,16 @@ function projectToProperties(p: Partial<ProjectInput>): Record<string, string> {
   return props;
 }
 
+/**
+ * HubSpot object ids are numeric. Ids that reach the direct adapter from the
+ * assistant/MCP surfaces are caller-supplied, so refuse anything else before
+ * it is interpolated into a request path (the MCP adapter does the same).
+ */
+function assertObjectId(kind: string, id: string): string {
+  if (!/^\d{1,20}$/.test(id)) throw new Error(`invalid HubSpot ${kind} id`);
+  return id;
+}
+
 function taskToProperties(t: TaskInput): Record<string, string> {
   const props: Record<string, string> = { hs_task_subject: t.title };
   if (t.body !== undefined) props.hs_task_body = t.body;
@@ -51,7 +62,7 @@ function taskToProperties(t: TaskInput): Record<string, string> {
   return props;
 }
 
-export class ProjectsApiHubSpotClient implements HubSpotClient, HubSpotTaskOps {
+export class ProjectsApiHubSpotClient implements HubSpotClient, HubSpotTaskOps, HubSpotProjectOps {
   private get projectsPath(): string {
     return `/crm/objects/${config().hubspot.projectsApiVersion}/projects`;
   }
@@ -99,6 +110,67 @@ export class ProjectsApiHubSpotClient implements HubSpotClient, HubSpotTaskOps {
     return { subjectId: plan.subjectId, refs };
   }
 
+  // ---- Owner-facing project ops (assistant/MCP surface) ----
+  // Human-initiated; callers enforce the kill-switch and audit.
+
+  async listProjects(limit: number): Promise<ProjectSummary[]> {
+    const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
+    const props = 'hs_name,hs_pipeline,hs_pipeline_stage,hs_status';
+    const data = await this.http<{
+      results?: Array<{ id: string; properties?: Record<string, string | null> }>;
+    }>('GET', `${this.projectsPath}?limit=${Math.min(limit, 100)}&properties=${props}`, token);
+    return (data.results ?? []).map((r) => ({
+      id: r.id,
+      name: r.properties?.hs_name ?? '(unnamed)',
+      pipeline: r.properties?.hs_pipeline ?? null,
+      pipelineStage: r.properties?.hs_pipeline_stage ?? null,
+      status: r.properties?.hs_status ?? null,
+    }));
+  }
+
+  async createProject(project: ProjectInput): Promise<{ id: string }> {
+    const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
+    const created = await this.http<{ id: string }>('POST', this.projectsPath, token, {
+      properties: projectToProperties(project),
+    });
+    return { id: created.id };
+  }
+
+  async createTaskInProject(projectId: string, task: TaskInput): Promise<{ id: string }> {
+    assertObjectId('project', projectId);
+    const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
+    const created = await this.http<{ id: string }>('POST', '/crm/v3/objects/tasks', token, {
+      properties: taskToProperties(task),
+    });
+    await this.http('PUT', `/crm/v4/objects/tasks/${created.id}/associations/default/projects/${projectId}`, token);
+    return { id: created.id };
+  }
+
+  async listProjectTasks(projectId: string, limit: number): Promise<TaskSummary[]> {
+    assertObjectId('project', projectId);
+    const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
+    const assoc = await this.http<{ results?: Array<{ toObjectId: string | number }> }>(
+      'GET',
+      `/crm/v4/objects/projects/${projectId}/associations/tasks?limit=${Math.min(limit, 100)}`,
+      token,
+    );
+    const ids = (assoc.results ?? []).map((r) => String(r.toObjectId));
+    if (ids.length === 0) return [];
+    const batch = await this.http<{
+      results?: Array<{ id: string; properties?: Record<string, string | null> }>;
+    }>('POST', '/crm/v3/objects/tasks/batch/read', token, {
+      properties: ['hs_task_subject', 'hs_task_status', 'hs_timestamp', 'hs_task_body'],
+      inputs: ids.map((id) => ({ id })),
+    });
+    return (batch.results ?? []).map((r) => ({
+      id: r.id,
+      title: r.properties?.hs_task_subject ?? '(untitled)',
+      status: r.properties?.hs_task_status ?? null,
+      dueDate: r.properties?.hs_timestamp ?? null,
+      body: r.properties?.hs_task_body ?? null,
+    }));
+  }
+
   // ---- Owner-facing task ops (assistant/MCP surface) ----
   // Human-initiated: callers enforce the kill-switch and audit; egress and
   // credentials remain scoped to hubspot_admin like every other HubSpot call.
@@ -127,6 +199,7 @@ export class ProjectsApiHubSpotClient implements HubSpotClient, HubSpotTaskOps {
   }
 
   async commentOnTask(taskId: string, comment: string, nowIso: string): Promise<{ id: string }> {
+    assertObjectId('task', taskId);
     const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
     const note = await this.http<{ id: string }>('POST', '/crm/v3/objects/notes', token, {
       properties: { hs_note_body: comment, hs_timestamp: nowIso },

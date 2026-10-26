@@ -93,6 +93,10 @@ describe('MCP server', () => {
       'list_tasks',
       'create_task',
       'comment_on_task',
+      'list_projects',
+      'list_project_tasks',
+      'create_project',
+      'create_task_in_project',
     ]);
   });
 
@@ -170,5 +174,125 @@ describe('MCP server', () => {
       payload: { id: 1, method: 'tools/list' }, // missing jsonrpc
     });
     expect(bad.statusCode).toBe(400);
+  });
+});
+
+describe('MCP server — project tools', () => {
+  it('creates a project and a task inside it, listing both back', async () => {
+    const { InMemoryProjectOps } = await import('../integrations/hubspot/client.js');
+    const projectOps = new InMemoryProjectOps();
+    const app = Fastify();
+    await app.register(
+      createMcpRoutes({
+        pool: stubPool(),
+        llm: new StubLlmClient(() => 'x'),
+        accessToken: TOKEN,
+        projectOps,
+        nowMs: () => 1_700_000_000_000,
+        nowIso: () => '2026-08-06T12:00:00.000Z',
+        audit: async () => {},
+        frozen: async () => false,
+      }),
+    );
+    await app.ready();
+
+    const created = (
+      await rpc(app, 'tools/call', { name: 'create_project', arguments: { name: 'Resonate onboarding' } })
+    ).json();
+    expect(created.result.isError).toBe(false);
+    const projectId = JSON.parse(created.result.content[0].text).id;
+
+    const task = (
+      await rpc(app, 'tools/call', {
+        name: 'create_task_in_project',
+        arguments: { projectId, title: 'Configure SLA rules' },
+      })
+    ).json();
+    expect(task.result.isError).toBe(false);
+
+    const listed = (
+      await rpc(app, 'tools/call', { name: 'list_project_tasks', arguments: { projectId } })
+    ).json();
+    const tasks = JSON.parse(listed.result.content[0].text);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe('Configure SLA rules');
+
+    const projects = (await rpc(app, 'tools/call', { name: 'list_projects', arguments: {} })).json();
+    expect(JSON.parse(projects.result.content[0].text)[0].name).toBe('Resonate onboarding');
+  });
+
+  it('blocks project writes under the kill-switch and reports unconfigured without HubSpot', async () => {
+    const { InMemoryProjectOps } = await import('../integrations/hubspot/client.js');
+    const frozenApp = Fastify();
+    await frozenApp.register(
+      createMcpRoutes({
+        pool: stubPool(),
+        llm: new StubLlmClient(() => 'x'),
+        accessToken: TOKEN,
+        projectOps: new InMemoryProjectOps(),
+        audit: async () => {},
+        frozen: async () => true,
+      }),
+    );
+    await frozenApp.ready();
+    const blocked = (
+      await rpc(frozenApp, 'tools/call', { name: 'create_project', arguments: { name: 'nope' } })
+    ).json();
+    expect(blocked.result.isError).toBe(true);
+    expect(blocked.result.content[0].text).toMatch(/kill-switch/);
+
+    const bare = await buildApp();
+    const missing = (await rpc(bare, 'tools/call', { name: 'list_projects', arguments: {} })).json();
+    expect(missing.result.isError).toBe(true);
+    expect(missing.result.content[0].text).toMatch(/not configured/);
+  });
+});
+
+describe('MCP server — operator tool policy', () => {
+  it('applies the policy inside ask_assistant, not only to direct tools/call', async () => {
+    const taskOps = new InMemoryTaskOps();
+    // Tries the disabled write tool on the first turn, then gives up.
+    class PolicyLlm {
+      readonly offered: string[][] = [];
+      private step = 0;
+      async complete(): Promise<string> {
+        throw new Error('unused');
+      }
+      async completeTurn(req: import('../integrations/anthropic/client.js').LlmRequest) {
+        this.offered.push(req.tools?.map((t) => t.name) ?? []);
+        return this.step++ === 0
+          ? { stopReason: 'tool_use', content: [{ type: 'tool_use' as const, id: 't1', name: 'create_task', input: { title: 'nope' } }] }
+          : { stopReason: 'end_turn', content: [{ type: 'text' as const, text: 'Task creation is disabled.' }] };
+      }
+    }
+    const llm = new PolicyLlm();
+    const app = Fastify();
+    await app.register(
+      createMcpRoutes({
+        pool: stubPool(),
+        llm,
+        accessToken: TOKEN,
+        taskOps,
+        loadToolPolicy: async () => ['create_task', 'comment_on_task'],
+        nowMs: () => 1_700_000_000_000,
+        nowIso: () => '2026-08-07T12:00:00.000Z',
+        audit: async () => {},
+        frozen: async () => false,
+      }),
+    );
+    await app.ready();
+
+    // Direct call is refused…
+    const direct = (await rpc(app, 'tools/call', { name: 'create_task', arguments: { title: 'nope' } })).json();
+    expect(direct.result.isError).toBe(true);
+
+    // …and so is the same write reached through the nested assistant loop.
+    const nested = (
+      await rpc(app, 'tools/call', { name: 'ask_assistant', arguments: { question: 'create a task: nope' } })
+    ).json();
+    expect(nested.result.isError).toBe(false);
+    expect(JSON.parse(nested.result.content[0].text).answer).toBe('Task creation is disabled.');
+    expect(llm.offered[0]).toEqual(['list_tasks']); // disabled tools never offered to the model
+    expect(taskOps.tasks).toHaveLength(0); // and nothing was written
   });
 });

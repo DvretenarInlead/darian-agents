@@ -50,8 +50,12 @@ export interface AssistantRoutesOptions {
   fireflies?: AssistantDeps['fireflies'];
   /** HubSpot task tools for voice commands; writes are kill-switch gated. */
   taskOps?: AssistantDeps['taskOps'];
+  /** HubSpot project tools (always the direct adapter — Projects aren't on HubSpot's MCP). */
+  projectOps?: AssistantDeps['projectOps'];
   /** Loads the console-editable skill block for the system prompt. */
   loadSkill?: () => Promise<string>;
+  /** Loads the operator tool policy (disabled tool names). */
+  loadToolPolicy?: () => Promise<string[]>;
   /** Shared secret the HUD presents as `Authorization: Bearer <token>`. */
   accessToken: string;
   /** IPs/CIDRs allowed to reach the assistant at all. Empty = deny everyone. */
@@ -157,14 +161,17 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
 
         const { question, history } = req.body as { question: string; history?: AssistantTurn[] };
         const skillPrompt = opts.loadSkill ? await opts.loadSkill() : undefined;
+        const disabledTools = opts.loadToolPolicy ? await opts.loadToolPolicy() : undefined;
         const result = await askAssistant(
           {
             pool: opts.pool,
             llm: opts.llm,
             ...(skillPrompt ? { skillPrompt } : {}),
+            ...(disabledTools?.length ? { disabledTools } : {}),
             ...(opts.model ? { model: opts.model } : {}),
             ...(opts.fireflies ? { fireflies: opts.fireflies } : {}),
             ...(opts.taskOps ? { taskOps: opts.taskOps } : {}),
+            ...(opts.projectOps ? { projectOps: opts.projectOps } : {}),
           },
           question,
           history,
@@ -202,15 +209,18 @@ export function createAssistantRoutes(opts: AssistantRoutesOptions): FastifyPlug
             type: 'object',
             required: ['text'],
             additionalProperties: false,
-            properties: { text: { type: 'string', minLength: 1, maxLength: FREE_TEXT_MAX } },
+            properties: {
+              text: { type: 'string', minLength: 1, maxLength: FREE_TEXT_MAX },
+              speed: { type: 'number', minimum: 0.7, maximum: 1.2 },
+            },
           },
         },
       },
       async (req, reply) => {
         if (!opts.voice) return reply.code(501).send({ error: 'voice_not_configured' });
         if (!(await authorize(req, reply))) return reply;
-        const { text } = req.body as { text: string };
-        const out = await opts.voice.tts(text);
+        const { text, speed } = req.body as { text: string; speed?: number };
+        const out = await opts.voice.tts(text, speed !== undefined ? { speed } : undefined);
         return reply.header('content-type', out.mime).send(out.audio);
       },
     );
