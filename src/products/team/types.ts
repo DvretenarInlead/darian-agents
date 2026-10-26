@@ -202,6 +202,12 @@ export interface TeamStore {
   listRuns(limit: number): Promise<TeamRun[]>; // newest first
   listStreamableRuns(idleCutoff: Date): Promise<TeamRun[]>;
   updateRunState(runId: string, patch: RunStatePatch): Promise<void>;
+  /** Conditional update: apply the patch only if the run's status is in `from`. True if a row changed. */
+  transitionRunStatus(
+    runId: string,
+    from: readonly RunStatus[],
+    patch: RunStatePatch & { status: RunStatus },
+  ): Promise<boolean>;
 
   hasSeenEvent(eventKey: string): Promise<boolean>;
   markEventSeen(entry: SeenEvent): Promise<void>; // idempotent

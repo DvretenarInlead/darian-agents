@@ -295,6 +295,41 @@ export class PgTeamStore implements TeamStore {
     if ((res.rowCount ?? 0) === 0) throw new Error(`unknown run ${runId}`);
   }
 
+  async transitionRunStatus(
+    runId: string,
+    from: readonly RunStatus[],
+    patch: RunStatePatch & { status: RunStatus },
+  ): Promise<boolean> {
+    const res = await this.pool.query(
+      `UPDATE team_runs SET
+         status          = $3,
+         stop_reason     = CASE WHEN $4  THEN $5  ELSE stop_reason END,
+         list_cost_cents = CASE WHEN $6  THEN $7  ELSE list_cost_cents END,
+         budget_cents    = CASE WHEN $8  THEN $9  ELSE budget_cents END,
+         last_error      = CASE WHEN $10 THEN $11 ELSE last_error END,
+         last_event_at   = CASE WHEN $12 THEN $13 ELSE last_event_at END,
+         updated_at      = $14
+       WHERE id = $1 AND status = ANY($2)`,
+      [
+        runId,
+        [...from],
+        patch.status,
+        'stopReason' in patch,
+        patch.stopReason ?? null,
+        'listCostCents' in patch,
+        patch.listCostCents ?? null,
+        patch.budgetCents !== undefined,
+        patch.budgetCents ?? null,
+        'lastError' in patch,
+        patch.lastError ?? null,
+        patch.lastEventAt !== undefined,
+        patch.lastEventAt ?? null,
+        this.now(),
+      ],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
   // ---- event ledger ----
   async hasSeenEvent(eventKey: string): Promise<boolean> {
     const { rowCount } = await this.pool.query('SELECT 1 FROM team_run_events WHERE event_key = $1', [eventKey]);

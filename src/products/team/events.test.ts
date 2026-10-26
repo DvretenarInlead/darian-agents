@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { RawSessionEvent } from '../../integrations/anthropic/managedAgents.js';
 import type { AuditEvent } from '../../core/audit/writer.js';
 import { InMemoryTeamStore } from './memoryStore.js';
-import { capForAudit, eventKey, parseTeamEvent, processEvent } from './events.js';
+import { capForAudit, sanitizeJson, eventKey, parseTeamEvent, processEvent } from './events.js';
 import type { PendingAction, StreamDeps, TeamGate, TeamRun } from './types.js';
 
 const T0 = new Date('2026-10-26T12:00:00Z');
@@ -303,6 +303,66 @@ describe('processEvent', () => {
     expect(stored.input).toEqual({ key: 'abc\td', nested: ['x'] });
     expect(hasNul(JSON.stringify(audits))).toBe(false);
     expect(JSON.stringify(capForAudit({ a: 'x\u0000y' }).value)).toBe('{"a":"xy"}');
+  });
+
+  it('keeps a __proto__ key as an own property, in the stored input and the audit payload, without polluting', async () => {
+    const { deps, store, audits, run } = await setup();
+    const input = JSON.parse('{"__proto__":{"cmd":"rm -rf /"},"cmd":"ls"}');
+    await processEvent(deps, run, ask('p1', { input }));
+    const stored = [...store.actions.values()][0]!;
+    expect(Object.keys(stored.input as object).sort()).toEqual(['__proto__', 'cmd']);
+    expect(JSON.stringify(stored.input)).toBe('{"__proto__":{"cmd":"rm -rf /"},"cmd":"ls"}');
+    expect(JSON.stringify(audits.find((a) => a.eventType === 'team_session')!.payload)).toContain('rm -rf /');
+    expect(({} as Record<string, unknown>).cmd).toBeUndefined();
+    expect((stored.input as Record<string, unknown>).cmd).toBe('ls');
+  });
+
+  it('flags inputTruncated when stripping changes a key or collapses two keys', async () => {
+    const { deps, store, run } = await setup();
+    await processEvent(deps, run, ask('k1', { input: { 'a\u0000': 1, a: 2 } }));
+    await processEvent(deps, run, ask('k2', { input: { 'b\u0001': 1 } }));
+    await processEvent(deps, run, ask('k3', { input: { c: 'x\u0000y' } }));
+    const byEvent = (id: string) => [...store.actions.values()].find((a) => a.eventId === id)!;
+    expect(byEvent('k1').inputTruncated).toBe(true);
+    expect(byEvent('k2').inputTruncated).toBe(true);
+    expect(byEvent('k3').inputTruncated).toBe(false);
+    expect(sanitizeJson({ x: 1 })).toEqual({ value: { x: 1 }, altered: false });
+  });
+
+  it('replaces lone surrogates so the event is stored and marked seen', async () => {
+    const { deps, store, run } = await setup();
+    await expect(processEvent(deps, run, ask('s1', { input: { '\ud800k': '\ud800' } }))).resolves.toMatchObject({ duplicate: false });
+    expect(store.seen.has('s1')).toBe(true);
+    const stored = [...store.actions.values()][0]!;
+    expect(stored.input).toEqual({ '\ufffdk': '\ufffd' });
+    expect(stored.inputTruncated).toBe(true);
+  });
+
+  it('rethrows a transient audit error instead of using the minimal-payload fallback', async () => {
+    const calls: string[] = [];
+    const { deps, store, run } = await setup({
+      audit: async (e) => {
+        calls.push(e.eventType);
+        throw Object.assign(new Error('connection terminated'), { code: '57P01' });
+      },
+    });
+    await expect(processEvent(deps, run, { id: 't1', type: 'agent.message', content: [] })).rejects.toThrow('connection terminated');
+    expect(calls).toEqual(['team_session']);
+    expect(store.seen.has('t1')).toBe(false);
+  });
+
+  it('uses the minimal-payload fallback for a payload-class SQLSTATE', async () => {
+    let failures = 1;
+    const audits: AuditEvent[] = [];
+    const { deps, store, run } = await setup({
+      audit: async (e) => {
+        if (failures-- > 0) throw Object.assign(new Error('boom'), { code: '22P05' });
+        audits.push(e);
+      },
+    });
+    await processEvent(deps, run, { id: 't2', type: 'agent.message', content: [] });
+    expect(store.seen.has('t2')).toBe(true);
+    expect(audits[0]!.payload).toMatchObject({ truncated: true, auditError: 'boom' });
   });
 
   it('retries the team_session audit once with a minimal payload, then rethrows', async () => {

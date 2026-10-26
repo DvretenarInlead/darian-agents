@@ -232,6 +232,18 @@ d('PgTeamStore (Postgres)', () => {
       expect((await store.getRun(run.id))!.updatedAt).toEqual(at(5));
     });
 
+    it('transitionRunStatus applies only from a listed status', async () => {
+      const run = await liveRun();
+      await store.updateRunState(run.id, { status: 'budget_reached', stopReason: 'budget_reached' });
+      expect(await store.transitionRunStatus(run.id, ['running', 'idle'], { status: 'idle', budgetCents: 5 })).toBe(false);
+      expect(await store.getRun(run.id)).toMatchObject({ status: 'budget_reached', stopReason: 'budget_reached' });
+      expect(
+        await store.transitionRunStatus(run.id, ['budget_reached'], { status: 'idle', stopReason: null, budgetCents: 5 }),
+      ).toBe(true);
+      expect(await store.getRun(run.id)).toMatchObject({ status: 'idle', stopReason: null, budgetCents: 5 });
+      expect(await store.transitionRunStatus('00000000-0000-0000-0000-000000000000', ['idle'], { status: 'running' })).toBe(false);
+    });
+
     it('listRuns is newest first and honours the limit', async () => {
       const ids: string[] = [];
       for (let i = 0; i < 3; i++) {

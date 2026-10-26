@@ -295,6 +295,16 @@ describe('launcher.followUp', () => {
     expect((await h.store.getRun(runId))!.status).toBe('requires_action');
   });
 
+  it('does not clobber a status change to the same-or-other value made by the worker during the send', async () => {
+    const orig = h.client.sendUserMessage.bind(h.client);
+    h.client.sendUserMessage = async (sid, text) => {
+      await orig(sid, text);
+      await h.store.updateRunState(runId, { status: 'terminated' });
+    };
+    await h.launcher.followUp({ runId, text: 'hi', actorId: OTHER });
+    expect((await h.store.getRun(runId))!.status).toBe('terminated');
+  });
+
   it('refuses requires_action and budget_reached as run_busy, terminated and failed as run_not_active', async () => {
     await h.store.updateRunState(runId, { status: 'requires_action' });
     await expectCode(h.launcher.followUp({ runId, text: 'hi', actorId: OTHER }), 'run_busy');
@@ -391,6 +401,18 @@ describe('launcher.raiseBudget', () => {
     expect(run).toMatchObject({ status: 'idle', stopReason: null, budgetCents: 3000 });
     await h.launcher.followUp({ runId, text: 'carry on', actorId: OTHER });
     expect((await h.store.getRun(runId))!.status).toBe('running');
+  });
+
+  it('does not reopen a run terminated while updateBudget was in flight', async () => {
+    await h.store.updateRunState(runId, { status: 'budget_reached', stopReason: 'budget_reached' });
+    const orig = h.client.updateBudget.bind(h.client);
+    h.client.updateBudget = async (sid, cents) => {
+      const r = await orig(sid, cents);
+      await h.store.updateRunState(runId, { status: 'terminated' });
+      return r;
+    };
+    const run = await h.launcher.raiseBudget({ runId, newCents: 3000, actorId: OTHER });
+    expect(run).toMatchObject({ status: 'terminated', budgetCents: 3000 });
   });
 
   it('leaves the status alone when the run was not budget_reached', async () => {

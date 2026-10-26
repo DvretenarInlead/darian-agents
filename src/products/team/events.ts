@@ -138,29 +138,71 @@ export function eventKey(raw: RawSessionEvent): string {
 const C0_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g;
 const MAX_SANITIZE_DEPTH = 64;
 
-/** Recursively strip C0 control characters from every string and object key. */
-export function stripControlChars(value: unknown, depth = 0): unknown {
-  if (typeof value === 'string') return value.replace(C0_CONTROLS, '');
-  if (value === null || typeof value !== 'object') return value;
-  if (depth >= MAX_SANITIZE_DEPTH) return '[too deep]';
-  if (Array.isArray(value)) return value.map((v) => stripControlChars(v, depth + 1));
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value)) out[k.replace(C0_CONTROLS, '')] = stripControlChars(v, depth + 1);
-  return out;
+/** Strip C0 controls and replace lone UTF-16 surrogates (Postgres rejects both). */
+function cleanString(s: string): string {
+  // toWellFormed is Node 20+/ES2024; the project's lib target predates its typings.
+  return (s.replace(C0_CONTROLS, '') as string & { toWellFormed(): string }).toWellFormed();
+}
+
+/**
+ * Recursively sanitise every string and object key. Objects are rebuilt with
+ * Object.fromEntries so a `__proto__` key stays an own data property. `altered`
+ * is set when a key changed or two keys collapsed into one, i.e. the result is
+ * not a byte-exact view of the input's structure.
+ */
+export function sanitizeJson(value: unknown, depth = 0): { value: unknown; altered: boolean } {
+  if (typeof value === 'string') return { value: cleanString(value), altered: false };
+  if (value === null || typeof value !== 'object') return { value, altered: false };
+  if (depth >= MAX_SANITIZE_DEPTH) return { value: '[too deep]', altered: false };
+  let altered = false;
+  if (Array.isArray(value)) {
+    const items = value.map((v) => {
+      const r = sanitizeJson(v, depth + 1);
+      altered ||= r.altered;
+      return r.value;
+    });
+    return { value: items, altered };
+  }
+  const entries = new Map<string, unknown>();
+  for (const [k, v] of Object.entries(value)) {
+    const nk = cleanString(k);
+    if (nk !== k || entries.has(nk)) altered = true;
+    const r = sanitizeJson(v, depth + 1);
+    altered ||= r.altered;
+    entries.set(nk, r.value);
+  }
+  return { value: Object.fromEntries(entries), altered };
+}
+
+/** Value-only form of {@link sanitizeJson}. */
+export function stripControlChars(value: unknown): unknown {
+  return sanitizeJson(value).value;
 }
 
 /** Cap a value's serialised size. Over the cap it is replaced by a marked preview. */
 export function capForAudit(value: unknown, maxChars = AUDIT_EVENT_CAP_CHARS): { value: unknown; truncated: boolean } {
   let json: string | undefined;
+  let altered: boolean;
   try {
     // Honour toJSON first (Dates etc.), then sanitise the plain-data result.
-    value = stripControlChars(JSON.parse(JSON.stringify(value) ?? 'null'));
+    const clean = sanitizeJson(JSON.parse(JSON.stringify(value) ?? 'null'));
+    value = clean.value;
+    altered = clean.altered;
     json = JSON.stringify(value);
   } catch {
     return { value: { unserializable: true }, truncated: true };
   }
-  if (json === undefined || json.length <= maxChars) return { value, truncated: false };
+  if (json === undefined || json.length <= maxChars) return { value, truncated: altered };
   return { value: { truncated: true, originalChars: json.length, preview: json.slice(0, maxChars) }, truncated: true };
+}
+
+const PAYLOAD_ERROR_CODES = new Set(['22P05', '22021', '22P02']);
+const PAYLOAD_ERROR_MESSAGE = /unsupported Unicode escape|invalid byte sequence|surrogate/i;
+
+function isPayloadError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && PAYLOAD_ERROR_CODES.has(code)) return true;
+  return PAYLOAD_ERROR_MESSAGE.test(err instanceof Error ? err.message : String(err));
 }
 
 function idleStatus(stopReason: string): RunStatus {
@@ -274,8 +316,10 @@ async function apply(deps: StreamDeps, run: TeamRun, raw: RawSessionEvent): Prom
     try {
       await audit({ eventType: 'team_session', product: 'team', actorId: null, subjectId: run.id, payload });
     } catch (err) {
-      // One unauditable event must not freeze the run: retry once with a minimal
-      // payload; if even that fails the store is really down, so rethrow.
+      // One unauditable payload must not freeze the run: retry once with a minimal
+      // payload, but only for payload-class errors. Transient errors rethrow so the
+      // replay audits the full event later.
+      if (!isPayloadError(err)) throw err;
       const auditError = (err instanceof Error ? err.message : String(err)).slice(0, 500);
       await audit({
         eventType: 'team_session',

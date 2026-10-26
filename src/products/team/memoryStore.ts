@@ -101,6 +101,17 @@ export class InMemoryTeamStore implements TeamStore {
     this.patchRun(runId, applied);
   }
 
+  async transitionRunStatus(
+    runId: string,
+    from: readonly RunStatus[],
+    patch: RunStatePatch & { status: RunStatus },
+  ): Promise<boolean> {
+    const run = this.runs.get(runId);
+    if (!run || !from.includes(run.status)) return false;
+    await this.updateRunState(runId, patch);
+    return true;
+  }
+
   // ---- event ledger ----
   async hasSeenEvent(eventKey: string): Promise<boolean> {
     return this.seen.has(eventKey);
