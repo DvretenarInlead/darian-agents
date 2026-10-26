@@ -78,6 +78,23 @@ const envSchema = z.object({
 
   EGRESS_ALLOWLIST: z.string().optional(),
 
+  /** PYB Team control plane (Managed Agents). Off by default; needs ANTHROPIC_API_KEY. */
+  TEAM_ENABLED: boolish.default(false),
+  TEAM_LOCKFILE_PATH: z.string().default('agents/pyb/claude-lock.json'),
+  /** Default session budget (cents) when neither app_settings nor the catalog sets one. */
+  TEAM_DEFAULT_BUDGET_CENTS: z.coerce.number().int().min(50).default(1000),
+  /** Hard ceiling for any budget set or raised from the console (cents). */
+  TEAM_MAX_BUDGET_CENTS: z.coerce.number().int().min(50).default(10000),
+  /** Pending approvals older than this are denied automatically. */
+  TEAM_APPROVAL_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+  /** Idle (end_turn) runs keep their stream open this long, then close until a follow-up. */
+  TEAM_STREAM_IDLE_CLOSE_MIN: z.coerce.number().int().min(1).default(30),
+  /** Shared vault ids (vlt_…) — ids, not secrets. Unset → the server is simply not attached to sessions. */
+  TEAM_FIREFLIES_VAULT_ID: z.string().regex(/^vlt_[A-Za-z0-9_-]{1,128}$/).optional(),
+  TEAM_GITHUB_VAULT_ID: z.string().regex(/^vlt_[A-Za-z0-9_-]{1,128}$/).optional(),
+  /** Anthropic workspace id for Console deep links to sessions (optional). */
+  ANTHROPIC_WORKSPACE_ID: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
+
   AUDIT_SHIP_ENDPOINT: z.string().optional(),
   AUDIT_SHIP_TOKEN: z.string().optional(),
 });
@@ -101,6 +118,17 @@ export interface Config {
   trustProxy: boolean;
   session: { accessTtlSec: number; idleTtlSec: number; absoluteTtlSec: number; sudoWindowSec: number };
   egressAllowlist: string[];
+  team: {
+    enabled: boolean;
+    lockfilePath: string;
+    defaultBudgetCents: number;
+    maxBudgetCents: number;
+    approvalTtlHours: number;
+    streamIdleCloseMin: number;
+    firefliesVaultId: string | undefined;
+    githubVaultId: string | undefined;
+    workspaceId: string | undefined;
+  };
   auditShip: { endpoint: string | undefined; token: string | undefined };
 }
 
@@ -137,6 +165,17 @@ function build(raw: RawEnv): Config {
       sudoWindowSec: raw.SUDO_REAUTH_WINDOW_SEC,
     },
     egressAllowlist: csv(raw.EGRESS_ALLOWLIST),
+    team: {
+      enabled: raw.TEAM_ENABLED,
+      lockfilePath: raw.TEAM_LOCKFILE_PATH,
+      defaultBudgetCents: raw.TEAM_DEFAULT_BUDGET_CENTS,
+      maxBudgetCents: raw.TEAM_MAX_BUDGET_CENTS,
+      approvalTtlHours: raw.TEAM_APPROVAL_TTL_HOURS,
+      streamIdleCloseMin: raw.TEAM_STREAM_IDLE_CLOSE_MIN,
+      firefliesVaultId: raw.TEAM_FIREFLIES_VAULT_ID,
+      githubVaultId: raw.TEAM_GITHUB_VAULT_ID,
+      workspaceId: raw.ANTHROPIC_WORKSPACE_ID,
+    },
     auditShip: { endpoint: raw.AUDIT_SHIP_ENDPOINT, token: raw.AUDIT_SHIP_TOKEN },
   };
 }

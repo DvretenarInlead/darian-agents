@@ -24,6 +24,7 @@ export const AGENTS = [
   'dev',
   'cto', // CTO / Architect — breaks non-security ties
   'assistant', // Personal assistant (voice/HUD query surface) — read-only, not a board voter
+  'team_control', // PYB Team control plane — drives Managed Agents sessions; not a board voter, no prompt
 ] as const;
 
 export type AgentName = (typeof AGENTS)[number];

@@ -58,6 +58,9 @@ const AGENT_SCOPES: Record<AgentName, AgentScope> = {
     secrets: ['anthropic', 'elevenlabs', 'fireflies'],
     egress: [EGRESS_HOSTS.anthropic, EGRESS_HOSTS.elevenlabs, EGRESS_HOSTS.fireflies],
   },
+  // Team control plane: only the Managed Agents REST surface. HubSpot/Fireflies/
+  // GitHub credentials for team sessions live in Anthropic vaults, never here.
+  team_control: ANTHROPIC,
 };
 
 export class CredentialScopeError extends Error {}
