@@ -181,14 +181,20 @@ export function createMcpRoutes(opts: McpRoutesOptions): FastifyPluginAsync {
       case 'ask_assistant': {
         const question = sanitize(String(args.question ?? ''), { maxLength: QUESTION_MAX });
         const skillPrompt = opts.loadSkill ? await opts.loadSkill() : undefined;
+        // The operator tool policy must reach the NESTED agent loop too —
+        // otherwise a disabled write tool is refused as a direct tools/call
+        // but still reachable by asking the assistant to do it.
+        const disabledTools = opts.loadToolPolicy ? await opts.loadToolPolicy() : undefined;
         const result = await askAssistant(
           {
             pool: opts.pool,
             llm: opts.llm,
             ...(skillPrompt ? { skillPrompt } : {}),
+            ...(disabledTools?.length ? { disabledTools } : {}),
             ...(opts.model ? { model: opts.model } : {}),
             ...(opts.fireflies ? { fireflies: opts.fireflies } : {}),
             ...(opts.taskOps ? { taskOps: opts.taskOps } : {}),
+            ...(opts.projectOps ? { projectOps: opts.projectOps } : {}),
           },
           question,
         );

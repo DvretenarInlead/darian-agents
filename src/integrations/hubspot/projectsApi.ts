@@ -43,6 +43,16 @@ function projectToProperties(p: Partial<ProjectInput>): Record<string, string> {
   return props;
 }
 
+/**
+ * HubSpot object ids are numeric. Ids that reach the direct adapter from the
+ * assistant/MCP surfaces are caller-supplied, so refuse anything else before
+ * it is interpolated into a request path (the MCP adapter does the same).
+ */
+function assertObjectId(kind: string, id: string): string {
+  if (!/^\d{1,20}$/.test(id)) throw new Error(`invalid HubSpot ${kind} id`);
+  return id;
+}
+
 function taskToProperties(t: TaskInput): Record<string, string> {
   const props: Record<string, string> = { hs_task_subject: t.title };
   if (t.body !== undefined) props.hs_task_body = t.body;
@@ -127,6 +137,7 @@ export class ProjectsApiHubSpotClient implements HubSpotClient, HubSpotTaskOps, 
   }
 
   async createTaskInProject(projectId: string, task: TaskInput): Promise<{ id: string }> {
+    assertObjectId('project', projectId);
     const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
     const created = await this.http<{ id: string }>('POST', '/crm/v3/objects/tasks', token, {
       properties: taskToProperties(task),
@@ -136,6 +147,7 @@ export class ProjectsApiHubSpotClient implements HubSpotClient, HubSpotTaskOps, 
   }
 
   async listProjectTasks(projectId: string, limit: number): Promise<TaskSummary[]> {
+    assertObjectId('project', projectId);
     const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
     const assoc = await this.http<{ results?: Array<{ toObjectId: string | number }> }>(
       'GET',
@@ -187,6 +199,7 @@ export class ProjectsApiHubSpotClient implements HubSpotClient, HubSpotTaskOps, 
   }
 
   async commentOnTask(taskId: string, comment: string, nowIso: string): Promise<{ id: string }> {
+    assertObjectId('task', taskId);
     const token = getScopedSecret('hubspot_admin', 'hubspotAccess');
     const note = await this.http<{ id: string }>('POST', '/crm/v3/objects/notes', token, {
       properties: { hs_note_body: comment, hs_timestamp: nowIso },

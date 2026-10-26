@@ -247,3 +247,52 @@ describe('MCP server — project tools', () => {
     expect(missing.result.content[0].text).toMatch(/not configured/);
   });
 });
+
+describe('MCP server — operator tool policy', () => {
+  it('applies the policy inside ask_assistant, not only to direct tools/call', async () => {
+    const taskOps = new InMemoryTaskOps();
+    // Tries the disabled write tool on the first turn, then gives up.
+    class PolicyLlm {
+      readonly offered: string[][] = [];
+      private step = 0;
+      async complete(): Promise<string> {
+        throw new Error('unused');
+      }
+      async completeTurn(req: import('../integrations/anthropic/client.js').LlmRequest) {
+        this.offered.push(req.tools?.map((t) => t.name) ?? []);
+        return this.step++ === 0
+          ? { stopReason: 'tool_use', content: [{ type: 'tool_use' as const, id: 't1', name: 'create_task', input: { title: 'nope' } }] }
+          : { stopReason: 'end_turn', content: [{ type: 'text' as const, text: 'Task creation is disabled.' }] };
+      }
+    }
+    const llm = new PolicyLlm();
+    const app = Fastify();
+    await app.register(
+      createMcpRoutes({
+        pool: stubPool(),
+        llm,
+        accessToken: TOKEN,
+        taskOps,
+        loadToolPolicy: async () => ['create_task', 'comment_on_task'],
+        nowMs: () => 1_700_000_000_000,
+        nowIso: () => '2026-08-07T12:00:00.000Z',
+        audit: async () => {},
+        frozen: async () => false,
+      }),
+    );
+    await app.ready();
+
+    // Direct call is refused…
+    const direct = (await rpc(app, 'tools/call', { name: 'create_task', arguments: { title: 'nope' } })).json();
+    expect(direct.result.isError).toBe(true);
+
+    // …and so is the same write reached through the nested assistant loop.
+    const nested = (
+      await rpc(app, 'tools/call', { name: 'ask_assistant', arguments: { question: 'create a task: nope' } })
+    ).json();
+    expect(nested.result.isError).toBe(false);
+    expect(JSON.parse(nested.result.content[0].text).answer).toBe('Task creation is disabled.');
+    expect(llm.offered[0]).toEqual(['list_tasks']); // disabled tools never offered to the model
+    expect(taskOps.tasks).toHaveLength(0); // and nothing was written
+  });
+});
