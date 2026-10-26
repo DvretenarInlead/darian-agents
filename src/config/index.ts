@@ -19,6 +19,13 @@ const boolish = z
   .enum(['true', 'false', '1', '0'])
   .transform((v) => v === 'true' || v === '1');
 
+/**
+ * Optional id-shaped value: an empty string (the usual `.env` placeholder) counts
+ * as unset, anything else must match the pattern.
+ */
+const optionalMatching = (re: RegExp) =>
+  z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(re).optional());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8080),
@@ -90,10 +97,10 @@ const envSchema = z.object({
   /** Idle (end_turn) runs keep their stream open this long, then close until a follow-up. */
   TEAM_STREAM_IDLE_CLOSE_MIN: z.coerce.number().int().min(1).default(30),
   /** Shared vault ids (vlt_…) — ids, not secrets. Unset → the server is simply not attached to sessions. */
-  TEAM_FIREFLIES_VAULT_ID: z.string().regex(/^vlt_[A-Za-z0-9_-]{1,128}$/).optional(),
-  TEAM_GITHUB_VAULT_ID: z.string().regex(/^vlt_[A-Za-z0-9_-]{1,128}$/).optional(),
+  TEAM_FIREFLIES_VAULT_ID: optionalMatching(/^vlt_[A-Za-z0-9_-]{1,128}$/),
+  TEAM_GITHUB_VAULT_ID: optionalMatching(/^vlt_[A-Za-z0-9_-]{1,128}$/),
   /** Anthropic workspace id for Console deep links to sessions (optional). */
-  ANTHROPIC_WORKSPACE_ID: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
+  ANTHROPIC_WORKSPACE_ID: optionalMatching(/^[A-Za-z0-9_-]{1,128}$/),
 
   AUDIT_SHIP_ENDPOINT: z.string().optional(),
   AUDIT_SHIP_TOKEN: z.string().optional(),
