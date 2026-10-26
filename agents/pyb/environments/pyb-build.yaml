@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://platform.claude.com/schemas/ant/beta/environment.json
+# Used by: HubSpot Developer, QA Reviewer, Security Reviewer
+name: pyb-build
+description: Package managers on so tests and scanners can install. That also opens the public registries and GitHub.
+config:
+  type: cloud
+  networking:
+    type: limited
+    allowed_hosts:
+    - api.githubcopilot.com
+    - mcp.hubspot.com
+    - developers.hubspot.com
+    allow_package_managers: true
+  packages:
+    npm:
+    - jest
+    pip:
+    - pytest

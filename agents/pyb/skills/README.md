@@ -1,0 +1,1 @@
+Put custom skills here, one directory each with a SKILL.md at its root (for example skills/pyb-brief-template/SKILL.md), then reference them from an agent file as `skills: [../skills/pyb-brief-template]`.

@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://platform.claude.com/schemas/ant/beta/environment.json
+# Used by: Migration and Data
+name: pyb-migration
+description: Add the source system's host for the engagement and remove it afterwards. Package managers stay off because this agent sees client data.
+config:
+  type: cloud
+  networking:
+    type: limited
+    allowed_hosts:
+    - mcp.hubspot.com
+    allow_package_managers: false
