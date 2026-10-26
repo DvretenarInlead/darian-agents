@@ -20,7 +20,7 @@ function navUser(u: CurrentUser): NavUser {
 }
 
 /** Resolve + authorize. Returns the user, or null after sending a redirect/403. */
-async function guard(req: FastifyRequest, reply: FastifyReply, deps: ConsoleDeps, perm?: string): Promise<CurrentUser | null> {
+export async function guard(req: FastifyRequest, reply: FastifyReply, deps: ConsoleDeps, perm?: string): Promise<CurrentUser | null> {
   const user = await resolveUser(req, deps);
   if (!user) {
     void reply.redirect('/console/login');
@@ -34,7 +34,7 @@ async function guard(req: FastifyRequest, reply: FastifyReply, deps: ConsoleDeps
 }
 
 /** Returns true (and redirects to sudo) when the action needs re-auth. */
-function needsSudo(reply: FastifyReply, user: CurrentUser, returnTo: string): boolean {
+export function needsSudo(reply: FastifyReply, user: CurrentUser, returnTo: string): boolean {
   if (user.sudoActive) return false;
   void reply.redirect('/console/sudo?return=' + encodeURIComponent(returnTo));
   return true;
@@ -173,7 +173,7 @@ function registerAgentRoutes(app: FastifyInstance, deps: ConsoleDeps, guard: Gua
     const body = `<h1>Agents</h1>
       <p class="muted">All platform agents. Badges show each agent's allowed egress and live tool status.
       Prompt edits are versioned, audited, and take effect within ~30s (assistant) or on the next run (board).</p>
-      ${AGENTS.map((agent) => {
+      ${AGENTS.filter((a) => a !== 'team_control').map((agent) => {
         const r = configured.get(agent);
         const prompt = r?.prompt ?? defaultPromptFor(agent);
         const enabled = r?.enabled ?? true;

@@ -3,6 +3,7 @@ import fastifyCookie from '@fastify/cookie';
 import fastifyFormbody from '@fastify/formbody';
 import { registerAuthRoutes } from './auth.js';
 import { registerPanelRoutes } from './panels.js';
+import { registerTeamRoutes } from './teamPanels.js';
 import type { ConsoleDeps } from './context.js';
 
 export type { ConsoleDeps } from './context.js';
@@ -17,5 +18,6 @@ export function createConsole(deps: ConsoleDeps): FastifyPluginAsync {
     await app.register(fastifyFormbody);
     registerAuthRoutes(app, deps);
     registerPanelRoutes(app, deps);
+    registerTeamRoutes(app, deps);
   };
 }
