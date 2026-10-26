@@ -43,6 +43,19 @@ export const queueDepth = new Gauge({
   registers: [registry],
 });
 
+export const teamEventsProcessed = new Counter({
+  name: 'team_events_processed_total',
+  help: 'PYB Team session events handled by type and outcome',
+  labelNames: ['type', 'outcome'] as const, // outcome: processed | duplicate | error
+  registers: [registry],
+});
+
+export const teamStreamsOpen = new Gauge({
+  name: 'team_streams_open',
+  help: 'Managed Agents session event streams currently held by this worker',
+  registers: [registry],
+});
+
 /** Render the metrics exposition text (Content-Type from registry.contentType). */
 export async function renderMetrics(): Promise<string> {
   return registry.metrics();
