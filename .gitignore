@@ -26,3 +26,6 @@ logs/
 # Test / coverage
 coverage/
 .vitest/
+
+# Claude Code: per-user overrides
+.claude/settings.local.json
