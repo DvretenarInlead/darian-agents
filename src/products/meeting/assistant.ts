@@ -8,7 +8,7 @@ import {
 } from '../../integrations/anthropic/client.js';
 import type { FirefliesClient } from '../../integrations/fireflies/client.js';
 import type { HubSpotProjectOps, HubSpotTaskOps } from '../../integrations/hubspot/client.js';
-import { loadSyncRules, type SyncRules } from './rules.js';
+import { loadSyncRules } from './rules.js';
 import { isEngaged } from '../../console/killswitch.js';
 import { sanitize, scanForInjection } from '../../core/agents/sanitize.js';
 import { FREE_TEXT_MAX } from '../../core/agents/contract.js';

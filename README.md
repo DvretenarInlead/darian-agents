@@ -84,3 +84,12 @@ docs/              Architecture, security, and ISO compliance mapping
 - [`docs/SECURITY.md`](docs/SECURITY.md) — the security model and hardening controls.
 - [`docs/COMPLIANCE.md`](docs/COMPLIANCE.md) — ISO 9001 / 27001 / 42001 control mapping.
 - [`docs/BUILD_BRIEF.md`](docs/BUILD_BRIEF.md) — the source build brief (v2).
+- [`docs/PYB_TEAM_ARCHITECTURE.md`](docs/PYB_TEAM_ARCHITECTURE.md) — proposal: PYB Managed Agents with this app as the control plane.
+
+## Working on this repo with Claude Code
+
+The process and conventions live in [`CLAUDE.md`](CLAUDE.md); the specialist
+agents (`architect`, `implementer`, `reviewer`, `security`), the `/plan` and
+`/ship` skills and the `/build` and `/review` workflows live under `.claude/`.
+`scripts/preflight.sh` is the pre-push gate, run by `/ship` and by the
+`git push` hook in `.claude/settings.json`.
