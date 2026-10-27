@@ -12,6 +12,12 @@ import { createNotifier } from './integrations/slack/client.js';
 import { pollFireflies } from './products/meeting/poll.js';
 import { makeRepoHandler } from './products/repo/handler.js';
 import { withCronLock } from './core/triggers/cronLock.js';
+import { isEngaged } from './console/killswitch.js';
+import { SdkManagedAgentsClient } from './integrations/anthropic/managedAgentsSdk.js';
+import { PgTeamStore } from './products/team/store.js';
+import { createTeamGate } from './products/team/gate.js';
+import { createTeamSupervisor } from './products/team/supervisor.js';
+import { pgAuditSink, pgSodPort } from './products/team/types.js';
 
 /**
  * Worker entrypoint (code-review P0). Drains the durable job queue and runs the
@@ -86,6 +92,31 @@ async function start(): Promise<void> {
     }
   })();
 
+  // PYB Team control plane: one leader holds the Managed Agents session streams
+  // (advisory lock; failover when its connection drops). See
+  // docs/plans/team-control-plane.md for why this is a loop, not a job per run.
+  const teamDone = (async () => {
+    if (!cfg.team.enabled || !cfg.anthropic.apiKey) return;
+    const client = new SdkManagedAgentsClient();
+    const store = new PgTeamStore(pool);
+    const isWritesFrozen = () => isEngaged(pool);
+    const audit = pgAuditSink(pool, () => new Date());
+    const gate = createTeamGate({ store, client, audit, isWritesFrozen, sod: pgSodPort(pool), now: () => new Date() });
+    const supervisor = createTeamSupervisor({
+      store, client, gate, audit, isWritesFrozen, now: () => new Date(), cfg: cfg.team,
+      ...(notifier ? { notify: (t: string) => notifier.notify(t) } : {}),
+    });
+    log().info('team supervisor candidate');
+    while (!stopping) {
+      try {
+        await withCronLock(pool, 'team_stream_supervisor', () => supervisor.run(stopped));
+      } catch (err) {
+        log().error({ err: String(err) }, 'team supervisor crashed; retrying');
+      }
+      for (let waited = 0; waited < 5_000 && !stopping; waited += 1_000) await sleep(1_000);
+    }
+  })();
+
   await runConsumer({
     claim: () => claimJob(pool),
     complete: (job) => {
@@ -103,6 +134,7 @@ async function start(): Promise<void> {
   });
 
   await pollerDone;
+  await teamDone;
   await closePool();
   process.exit(0);
 }

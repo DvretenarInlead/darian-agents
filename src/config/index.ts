@@ -19,6 +19,13 @@ const boolish = z
   .enum(['true', 'false', '1', '0'])
   .transform((v) => v === 'true' || v === '1');
 
+/**
+ * Optional id-shaped value: an empty string (the usual `.env` placeholder) counts
+ * as unset, anything else must match the pattern.
+ */
+const optionalMatching = (re: RegExp) =>
+  z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(re).optional());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8080),
@@ -78,6 +85,23 @@ const envSchema = z.object({
 
   EGRESS_ALLOWLIST: z.string().optional(),
 
+  /** PYB Team control plane (Managed Agents). Off by default; needs ANTHROPIC_API_KEY. */
+  TEAM_ENABLED: boolish.default(false),
+  TEAM_LOCKFILE_PATH: z.string().default('agents/pyb/claude-lock.json'),
+  /** Default session budget (cents) when neither app_settings nor the catalog sets one. */
+  TEAM_DEFAULT_BUDGET_CENTS: z.coerce.number().int().min(50).default(1000),
+  /** Hard ceiling for any budget set or raised from the console (cents). */
+  TEAM_MAX_BUDGET_CENTS: z.coerce.number().int().min(50).default(10000),
+  /** Pending approvals older than this are denied automatically. */
+  TEAM_APPROVAL_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+  /** Idle (end_turn) runs keep their stream open this long, then close until a follow-up. */
+  TEAM_STREAM_IDLE_CLOSE_MIN: z.coerce.number().int().min(1).default(30),
+  /** Shared vault ids (vlt_…) — ids, not secrets. Unset → the server is simply not attached to sessions. */
+  TEAM_FIREFLIES_VAULT_ID: optionalMatching(/^vlt_[A-Za-z0-9_-]{1,128}$/),
+  TEAM_GITHUB_VAULT_ID: optionalMatching(/^vlt_[A-Za-z0-9_-]{1,128}$/),
+  /** Anthropic workspace id for Console deep links to sessions (optional). */
+  ANTHROPIC_WORKSPACE_ID: optionalMatching(/^[A-Za-z0-9_-]{1,128}$/),
+
   AUDIT_SHIP_ENDPOINT: z.string().optional(),
   AUDIT_SHIP_TOKEN: z.string().optional(),
 });
@@ -101,6 +125,17 @@ export interface Config {
   trustProxy: boolean;
   session: { accessTtlSec: number; idleTtlSec: number; absoluteTtlSec: number; sudoWindowSec: number };
   egressAllowlist: string[];
+  team: {
+    enabled: boolean;
+    lockfilePath: string;
+    defaultBudgetCents: number;
+    maxBudgetCents: number;
+    approvalTtlHours: number;
+    streamIdleCloseMin: number;
+    firefliesVaultId: string | undefined;
+    githubVaultId: string | undefined;
+    workspaceId: string | undefined;
+  };
   auditShip: { endpoint: string | undefined; token: string | undefined };
 }
 
@@ -137,6 +172,17 @@ function build(raw: RawEnv): Config {
       sudoWindowSec: raw.SUDO_REAUTH_WINDOW_SEC,
     },
     egressAllowlist: csv(raw.EGRESS_ALLOWLIST),
+    team: {
+      enabled: raw.TEAM_ENABLED,
+      lockfilePath: raw.TEAM_LOCKFILE_PATH,
+      defaultBudgetCents: raw.TEAM_DEFAULT_BUDGET_CENTS,
+      maxBudgetCents: raw.TEAM_MAX_BUDGET_CENTS,
+      approvalTtlHours: raw.TEAM_APPROVAL_TTL_HOURS,
+      streamIdleCloseMin: raw.TEAM_STREAM_IDLE_CLOSE_MIN,
+      firefliesVaultId: raw.TEAM_FIREFLIES_VAULT_ID,
+      githubVaultId: raw.TEAM_GITHUB_VAULT_ID,
+      workspaceId: raw.ANTHROPIC_WORKSPACE_ID,
+    },
     auditShip: { endpoint: raw.AUDIT_SHIP_ENDPOINT, token: raw.AUDIT_SHIP_TOKEN },
   };
 }

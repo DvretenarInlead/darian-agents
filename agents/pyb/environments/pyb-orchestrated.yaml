@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://platform.claude.com/schemas/ant/beta/environment.json
+# Used by: Orchestrator sessions
+name: pyb-orchestrated
+description: The union of the others, because every listed specialist's MCP host must be allowed. The widest of the four.
+config:
+  type: cloud
+  networking:
+    type: limited
+    allowed_hosts:
+    - mcp.hubspot.com
+    - api.fireflies.ai
+    - api.githubcopilot.com
+    - developers.hubspot.com
+    - knowledge.hubspot.com
+    - plusyourbusiness.com
+    - www.plusyourbusiness.com
+    allow_package_managers: true

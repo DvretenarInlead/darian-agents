@@ -57,6 +57,14 @@ services:
       # Slack pings (bot token + channel); optional — notifier inactive without both.
       - { key: SLACK_BOT_TOKEN, scope: RUN_TIME, type: SECRET }
       - { key: SLACK_CHANNEL_ID, scope: RUN_TIME, type: SECRET }
+      # PYB Team control plane (Managed Agents). Off until TEAM_ENABLED is "true"; ids below are vault ids, not secrets.
+      - { key: TEAM_ENABLED, value: "false" }
+      - { key: TEAM_APPROVAL_TTL_HOURS, value: "24" }
+      - { key: TEAM_DEFAULT_BUDGET_CENTS, value: "1000" }
+      - { key: TEAM_MAX_BUDGET_CENTS, value: "10000" }
+      # Uncomment and set to the Anthropic vault ids (vlt_...) once created; an empty value fails config validation.
+      # - { key: TEAM_FIREFLIES_VAULT_ID, value: "vlt_..." }
+      # - { key: TEAM_GITHUB_VAULT_ID, value: "vlt_..." }
       - { key: EGRESS_ALLOWLIST, value: "api.anthropic.com,api.fireflies.ai,api.hubapi.com,api.github.com,api.elevenlabs.io,slack.com" }
       - { key: AUDIT_SHIP_ENDPOINT, scope: RUN_TIME, type: SECRET }
       - { key: AUDIT_SHIP_TOKEN, scope: RUN_TIME, type: SECRET }

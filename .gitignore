@@ -29,3 +29,4 @@ coverage/
 
 # Claude Code: per-user overrides
 .claude/settings.local.json
+.claude/worktrees/

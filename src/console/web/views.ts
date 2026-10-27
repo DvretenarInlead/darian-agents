@@ -96,6 +96,7 @@ const STYLE = `
 const NAV = [
   { href: '/console', label: 'Dashboard', perm: null },
   { href: '/console/escalations', label: 'Escalations', perm: 'escalation:approve' },
+  { href: '/console/team/runs', label: 'Team', perm: 'team:view' },
   { href: '/console/agents', label: 'Agents', perm: 'agents:edit' },
   { href: '/console/skills', label: 'Skills', perm: 'agents:edit' },
   { href: '/console/triggers', label: 'Triggers', perm: 'triggers:edit' },

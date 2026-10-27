@@ -21,6 +21,33 @@ import { createConsole } from './console/web/plugin.js';
 import { PgUsersRepo, PgSessionsRepo } from './console/web/repos.js';
 import { defaultHasher } from './console/auth/password.js';
 import { keyringFromConfig } from './core/crypto/envelope.js';
+import type { Pool } from 'pg';
+import { isEngaged } from './console/killswitch.js';
+import type { TeamConsoleDeps } from './console/web/context.js';
+import { pgAuditSink, pgSodPort } from './products/team/types.js';
+import { SdkManagedAgentsClient } from './integrations/anthropic/managedAgentsSdk.js';
+import { PgTeamStore } from './products/team/store.js';
+import { createTeamLauncher } from './products/team/launcher.js';
+import { loadLockfile } from './products/team/lockfile.js';
+import { createTeamGate } from './products/team/gate.js';
+
+/**
+ * PYB Team control plane ports for the console. The web process sends
+ * confirmations and kickoff messages itself; it never opens session streams
+ * (the worker's leader does).
+ */
+function buildTeamConsoleDeps(pool: Pool): TeamConsoleDeps {
+  const cfg = config();
+  const client = new SdkManagedAgentsClient();
+  const store = new PgTeamStore(pool);
+  const audit = pgAuditSink(pool, () => new Date());
+  const sod = pgSodPort(pool);
+  const isWritesFrozen = () => isEngaged(pool);
+  const lockStatus = () => loadLockfile(cfg.team.lockfilePath);
+  const gate = createTeamGate({ store, client, audit, sod, isWritesFrozen, now: () => new Date() });
+  const launcher = createTeamLauncher({ pool, store, client, audit, sod, isWritesFrozen, lockStatus, cfg: cfg.team, now: () => new Date() });
+  return { store, launcher, gate, lockStatus };
+}
 
 /**
  * Application entrypoint (web service). At this foundation stage it boots
@@ -131,6 +158,9 @@ export function buildServer() {
     );
   }
 
+  // Team control plane is wired only when explicitly enabled and the Anthropic key is present.
+  const team = cfg.team.enabled && cfg.anthropic.apiKey ? buildTeamConsoleDeps(getPool()) : undefined;
+
   // Admin console (server-rendered UI + auth). Mounted under /console.
   void app.register(
     createConsole({
@@ -146,6 +176,7 @@ export function buildServer() {
         sudoWindowSec: cfg.session.sudoWindowSec,
       },
       ...(cfg.envelope.masterKey ? { keyring: keyringFromConfig() } : {}),
+      ...(team ? { team } : {}),
     }),
   );
 

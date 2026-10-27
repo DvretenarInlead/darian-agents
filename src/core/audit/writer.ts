@@ -31,9 +31,18 @@ export type AuditEventType =
   | 'approval'
   | 'external_write'
   | 'config_change'
-  | 'auth_event';
+  | 'auth_event'
+  // PYB Team control plane (Managed Agents). subjectId is always the team_runs.id.
+  | 'team_run_started' // launcher: session created + kickoff sent
+  | 'team_run_failed' // launcher: create or kickoff failed ({ stage: 'create' | 'kickoff', error })
+  | 'team_run_message' // follow-up user.message sent
+  | 'team_run_interrupted' // user.interrupt sent
+  | 'team_budget_changed' // session budget raised
+  | 'team_session' // a session event received (redacted, capped; span.* excluded)
+  | 'team_action_pending' // new pending ask recorded
+  | 'team_action_decided'; // approve/deny/ttl/kill_switch/portal_disabled/external/send_failed
 
-export type AuditProduct = 'meeting' | 'repo' | 'console';
+export type AuditProduct = 'meeting' | 'repo' | 'console' | 'team';
 
 export interface AuditEvent {
   eventType: AuditEventType;

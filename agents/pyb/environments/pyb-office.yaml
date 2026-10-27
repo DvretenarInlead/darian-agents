@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://platform.claude.com/schemas/ant/beta/environment.json
+# Used by: Project Manager, Solutions Architect, Content, HubSpot Admin
+name: pyb-office
+description: The PYB site hosts let Content read live pages. Add mcp.monday.com if you use monday.com.
+config:
+  type: cloud
+  networking:
+    type: limited
+    allowed_hosts:
+    - mcp.hubspot.com
+    - api.fireflies.ai
+    - developers.hubspot.com
+    - knowledge.hubspot.com
+    - plusyourbusiness.com
+    - www.plusyourbusiness.com
+    allow_package_managers: false
